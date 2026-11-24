@@ -55,8 +55,8 @@ This is a structural weakness that permits referential-integrity problems to ent
 | Order items referencing missing orders | 692 | High |
 | Orders referencing missing customers | 210 | High |
 | Inventory logs referencing missing products | 120 | High |
-| Category referencing missing parent | 1 | Medium |
-| Inconsistent order status representations | 15 distinct raw representations | Medium |
+| Category referencing missing parent | 1 | Low |
+| Inconsistent order status representations | 15 distinct raw representations | High, conditional reporting risk |
 
 The initial checks also found:
 
@@ -95,7 +95,7 @@ The estimates measure investigation effort only. They do not include the cost of
 
 ### 4.2 Estimated Investigation Costs
 
-| Integrity fault | Investigation units | Estimated cost |
+| Integrity fault | Investigation basis | Estimated cost |
 |---|---:|---:|
 | Order items referencing missing orders | 692 records | 1,730 |
 | Orders referencing missing customers | 210 records | 525 |
@@ -106,6 +106,8 @@ The estimates measure investigation effort only. They do not include the cost of
 The estimates indicate that investigating the missing-order references requires the greatest effort, followed by missing-customer references and missing-product inventory logs.
 
 The inconsistent statuses have a lower estimated initial review cost because the investigation can begin by examining the 15 distinct raw representations rather than manually reviewing every order.
+
+These figures are estimates of investigation effort. They should not be interpreted as a complete measure of the business impact or the cost of resolving each fault.
 
 ### 4.3 Monetary Exposure Requiring Reconciliation
 
@@ -124,9 +126,9 @@ The actual reporting distortion cannot be established from these values alone. I
 
 ### 4.4 Sensitivity Analysis
 
-To test whether the investigation-cost ranking depends heavily on the assumed staff rate, the hourly cost is reduced by half, from 30 to 15 cost units.
+To test whether the estimated investigation-cost ranking depends heavily on the assumed investigation time, I reduced the estimated time per orphan record from 5 minutes to 2.5 minutes. For inconsistent statuses, I reduced the review time from 10 minutes to 5 minutes. The assumed hourly rate remains 30 cost units.
 
-| Integrity fault | Original estimate | Estimate at half the rate |
+| Integrity fault | Original estimate | Estimate with half the time |
 |---|---:|---:|
 | Order items referencing missing orders | 1,730 | 865 |
 | Orders referencing missing customers | 525 | 262.50 |
@@ -134,7 +136,7 @@ To test whether the investigation-cost ranking depends heavily on the assumed st
 | Inconsistent order status representations | 75 | 37.50 |
 | Category referencing a missing parent | 2.50 | 1.25 |
 
-The ranking remains unchanged when the assumed hourly rate is halved. This indicates that the investigation-effort ranking is stable under this assumption.
+The ranking remains unchanged when the assumed investigation time is halved. This indicates that the investigation-effort ranking is stable under this sensitivity check.
 
 However, this ranking measures estimated investigation effort, not total business damage. The monetary exposure and operational consequences must also be considered when prioritising remediation.
 
@@ -285,7 +287,7 @@ Care must be taken not to create duplicate products or assign stock movements to
 
 ### 5.4 Category Referencing a Missing Parent
 
-**Priority: Medium**
+**Priority: Low**
 
 **1. What is wrong**
 
@@ -321,65 +323,61 @@ The parent should not be assigned arbitrarily because an incorrect relationship 
 
 ### 5.5 Inconsistent Order Statuses
 
-**Priority: Medium**
+**Priority: High, conditional reporting risk**
 
 **1. What is wrong**
 
-The investigation identified inconsistent status representations in the `orders` table.
-
-Grouping statuses after applying `LOWER(TRIM(status))` produced the following results:
-
-| Normalised status | Order count | Different raw representations |
-|---|---:|---:|
-| completed | 89,066 | 4 |
-| complete | 22,285 | 1 |
-| pending | 16,009 | 2 |
-| shipped | 12,848 | 2 |
-| cancelled | 9,488 | 3 |
-| refunded | 6,479 | 2 |
-| canceled | 3,209 | 1 |
-
-There are 15 distinct raw status representations across seven normalised groups.
+The `orders.status` column contains 15 distinct raw representations across seven normalised groups. These include inconsistent capitalisation, leading or trailing spaces, and alternative spellings. There are also potentially different business meanings, such as `complete` versus `completed`.
 
 **2. How it was found**
 
-The query grouped records using `LOWER(TRIM(status))` and counted the distinct original status values.
+The issue was identified by grouping statuses using `LOWER(TRIM(status))` and comparing exact-match counts with normalised counts.
+
+The comparison showed:
+
+| Status | Exact match | Normalised total |
+|---|---:|---:|
+| completed | 22,091 | 89,066 |
+| cancelled | 3,238 | 9,488 |
+| pending | 7,928 | 16,009 |
+
+For example, an exact `status = 'completed'` filter matches 22,091 records, while normalisation matches 89,066. This is a difference of 66,975 orders within the `completed` group.
+
+The separate `complete` group contains another 22,285 orders. It has not been combined with `completed` because their business meanings have not been confirmed.
 
 **3. What it costs**
 
-The estimated initial review cost is:
+The estimated initial investigation cost is:
 
 `(15 × 10 / 60) × 30 = 75 cost units`
 
-This estimate assumes that each distinct raw representation takes approximately 10 minutes to review and classify.
+If reports use exact status comparisons, they may exclude valid orders because of formatting differences. In the `completed` group, 66,975 records are not matched by the exact lowercase value. This creates a potential reporting accuracy and reconciliation risk.
 
-Reports that filter by exact status values may omit records with different capitalisation or surrounding spaces.
+The actual financial impact cannot yet be established because Nana's report definitions and status-filtering rules have not been confirmed. The terms `complete` and `completed`, and `canceled` and `cancelled`, also require business clarification before they are treated as equivalent.
 
-The terms `complete` and `completed`, as well as `canceled` and `cancelled`, may represent equivalent business states, but this must be confirmed with the business before mapping them together.
-
-The exact number of incorrectly classified orders and the resulting reporting distortion cannot yet be established without confirming the approved status definitions and examining the affected reports.
+The estimate covers the initial review of the 15 raw representations. It does not include reviewing every affected order or correcting the underlying data.
 
 **4. What should be done**
 
-Agree on an approved list of status values and define the meaning of each status. Review the existing representations, standardise records according to approved business rules, and enforce valid values using an appropriate database constraint or reference table.
-
-The risk of this correction is that similar-looking values may have different business meanings. They should not be merged without confirmation.
+Introduce a controlled set of permitted status values and standardise incoming values. Confirm the business meaning of each status with Nana before merging aliases. Update reporting queries to use the approved definitions and validate the results against the original records.
 
 ## 6. Danger Ranking
 
-The initial ranking below considers the available transaction exposure, operational consequences and estimated investigation effort. It is not a ranking of confirmed financial losses.
+The following is a provisional risk ranking based on the available evidence, potential business consequences and estimated investigation effort. It is not a ranking of confirmed financial losses. The actual impact of some findings depends on how Kloud Kart's reports and operational processes use the affected records.
 
 | Rank | Finding | Priority | Reason |
 |---:|---|---|---|
 | 1 | Order items referencing missing orders | High | 692 affected records and 826,327.80 in associated item value cannot be reconciled through their orders. |
 | 2 | Orders referencing missing customers | High | 210 orders with a combined recorded value of 665,180.61 cannot reliably be attributed to customers, potentially affecting the Monday report. |
-| 3 | Inventory logs referencing missing products | High | 120 stock movement records cannot be traced to valid products, weakening inventory auditing and reconciliation. |
-| 4 | Inconsistent order statuses | Medium | Inconsistent values can produce incomplete or misleading reports if exact status filters are used. |
-| 5 | Missing category parent | Medium | Breaks a hierarchy relationship, although no direct products or child categories are currently affected. |
+| 3 | Inconsistent order statuses | High, conditional | Up to 66,975 records in the `completed` group are not matched by an exact lowercase `completed` filter. The actual report-filtering impact remains unconfirmed. |
+| 4 | Inventory logs referencing missing products | High | 120 stock movement records cannot be traced to valid products, weakening inventory auditing and reconciliation. |
+| 5 | Missing category parent | Low | Breaks a hierarchy relationship, although no direct products or child categories are currently affected. |
 
-The first two findings have the largest recorded monetary exposure and may affect important business reporting. The inventory-log issue is also important because it weakens the audit trail for stock movements.
+The first two findings have the largest recorded monetary exposure and may affect important business reporting. The status issue could also have a substantial reporting impact if exact status filters are used. The inventory-log issue weakens the audit trail for stock movements.
 
-The investigation-cost ranking is consistent when the assumed hourly rate is halved. However, the danger ranking also considers the business consequences of each fault, not simply the cost of investigating it.
+The ranking should be reviewed when the actual report definitions, business status rules and reconciliation results are confirmed.
+
+The investigation-cost ranking remains unchanged when the assumed investigation time is halved. However, investigation effort alone does not determine the business danger of a fault.
 
 ## 7. Overall Recommendations
 
