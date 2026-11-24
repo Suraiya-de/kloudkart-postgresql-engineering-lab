@@ -1,7 +1,6 @@
-
 # Kloud Kart Data Diagnosis
 
-## 1. Project context
+## 1. Project Context
 
 Kloud Kart Ltd. is an e-commerce business operating in Accra, Ghana. This investigation examines the existing PostgreSQL database supplied for the Kloud Kart engineering lab.
 
@@ -9,7 +8,7 @@ The purpose of this diagnosis is to identify existing data-integrity and consist
 
 The investigation was performed against the supplied database before making any data modifications.
 
-## 2. Investigation approach
+## 2. Investigation Approach
 
 The investigation covered six database tables:
 
@@ -30,9 +29,26 @@ The following techniques were used:
 - Date-range analysis to understand the period covered by affected records.
 - Grouping and normalisation of order statuses to identify inconsistent representations.
 
-The integrity checks were saved in `integrity_checks.sql`. They were read-only and did not modify the source data.
+The read-only integrity checks are included in `sql/diagnostics/integrity_checks.sql`. They investigate potential problems without modifying or cleaning the source data.
 
-## 3. Summary of findings
+### 2.1 Schema Design Observations
+
+The supplied schema defines primary keys for the six tables but does not enforce the relationships between them using foreign-key constraints.
+
+The relationships that should be considered for enforcement include:
+
+- `categories.parent_id` referencing `categories.category_id`.
+- `products.category_id` referencing `categories.category_id`.
+- `orders.customer_id` referencing `customers.customer_id`.
+- `order_items.order_id` referencing `orders.order_id`.
+- `order_items.product_id` referencing `products.product_id`.
+- `inventory_log.product_id` referencing `products.product_id`.
+
+Without these constraints, PostgreSQL does not automatically prevent a record from referencing a non-existent parent record.
+
+This is a structural weakness that permits referential-integrity problems to enter the database. However, the absence of foreign keys alone does not establish the cause of every missing reference found during this investigation.
+
+## 3. Summary of Findings
 
 | Finding | Affected records | Priority |
 |---|---:|---|
@@ -51,9 +67,9 @@ The initial checks also found:
 
 These zero-count results only establish that the specific conditions tested were not found. They do not prove that every aspect of those tables is valid.
 
-## 4. Detailed findings
+## 4. Detailed Findings
 
-### 4.1 Order items referencing missing orders
+### 4.1 Order Items Referencing Missing Orders
 
 **Priority: High**
 
@@ -67,6 +83,8 @@ The investigation identified 692 order-item records referencing 689 distinct ord
 | Estimated item value | 826,327.80 |
 | Lowest unit price | 5.27 |
 | Highest unit price | 20,657.77 |
+
+The currency associated with this recorded monetary value has not been independently confirmed from the supplied schema or investigation evidence. The figure is therefore presented without assigning a currency.
 
 **Detection method**
 
@@ -86,7 +104,7 @@ This is the recorded value of the affected order items, not necessarily lost rev
 
 Investigate the missing order IDs using authorised source records or transaction history. Recover valid records or references where possible. Introduce a foreign key after existing violations have been resolved.
 
-### 4.2 Orders referencing missing customers
+### 4.2 Orders Referencing Missing Customers
 
 **Priority: High**
 
@@ -102,6 +120,8 @@ The investigation identified 210 orders referencing 190 distinct customer IDs th
 | Largest order value | 67,719.76 |
 | Earliest affected order | 2025-09-02 11:04:52 |
 | Latest affected order | 2026-08-31 12:36:13 |
+
+The currency associated with these recorded monetary values has not been independently confirmed from the supplied schema or investigation evidence. The figures are therefore presented without assigning a currency.
 
 **Detection method**
 
@@ -119,7 +139,7 @@ The affected orders include completed, pending, shipped, cancelled and refunded 
 
 Investigate whether the missing customers were deleted, omitted during data loading or created through another business process. Recover valid customer records or references where possible. Introduce a foreign key after reconciliation.
 
-### 4.3 Inventory logs referencing missing products
+### 4.3 Inventory Logs Referencing Missing Products
 
 **Priority: High**
 
@@ -148,7 +168,7 @@ All 120 affected records have the reason `sale` and a combined quantity change o
 
 Investigate the missing product references using historical product records and sales transactions. Restore valid references where possible and enforce a foreign key between `inventory_log.product_id` and `products.product_id`.
 
-### 4.4 Category referencing a missing parent
+### 4.4 Category Referencing a Missing Parent
 
 **Priority: Medium**
 
@@ -174,7 +194,7 @@ A broken parent relationship can affect category hierarchy traversal and low-sto
 
 Verify whether parent category 8999 was deleted or omitted during data loading. Restore the correct parent relationship or agree on an appropriate alternative.
 
-### 4.5 Inconsistent order statuses
+### 4.5 Inconsistent Order Statuses
 
 **Priority: Medium**
 
@@ -208,31 +228,32 @@ The terms `complete` and `completed`, as well as `canceled` and `cancelled`, may
 
 Agree on an approved list of status values, define the meaning of each status, standardise existing records and enforce valid values using an appropriate database constraint or reference table.
 
-## 5. Danger ranking
+## 5. Danger Ranking
 
 | Rank | Finding | Priority | Reason |
 |---:|---|---|---|
 | 1 | Order items referencing missing orders | High | 692 affected records and 826,327.80 in associated item value cannot be reconciled through their orders. |
 | 2 | Orders referencing missing customers | High | 210 orders with a combined recorded value of 665,180.61 cannot reliably be attributed to customers. |
-| 3 | Inventory logs referencing missing products | High | 120 stock movement records cannot be traced to valid products. |
+| 3 | Inventory logs referencing missing products | High | 120 stock movement records cannot be traced to valid products, weakening inventory auditing and reconciliation. |
 | 4 | Inconsistent order statuses | Medium | Inconsistent values can produce incomplete or misleading reports. |
 | 5 | Missing category parent | Medium | Breaks a hierarchy relationship, although no direct products or child categories are currently affected. |
 
 This ranking is an initial assessment based on the available evidence. It does not establish actual financial losses.
 
-## 6. Overall recommendations
+## 6. Overall Recommendations
 
-1. Investigate and reconcile orphan records before deleting or changing any data.
-2. Introduce appropriate foreign key constraints after resolving existing violations.
-3. Standardise order statuses and enforce valid values.
-4. Review and repair the category hierarchy.
-5. Add validation to data-loading processes so invalid records are detected before entering production tables.
-6. Establish recurring data-quality checks to identify new integrity problems.
+1. Investigate and reconcile orphan records using authorised historical records before deleting or changing any data.
+2. Review the database relationships and introduce appropriate foreign-key constraints after resolving existing violations. Validate existing data before enforcing the constraints.
+3. Establish an approved order-status vocabulary. Confirm the business meaning of similar values before standardising existing records, then enforce valid values using an appropriate database constraint or reference table.
+4. Review and repair the category hierarchy, confirming the correct parent for category 9003.
+5. Add validation to data-loading processes so missing references and invalid values are detected before entering operational tables.
+6. Establish recurring data-quality checks to identify new integrity problems and monitor the quality of operational data.
 
-## 7. Investigation limitations
+## 7. Investigation Limitations
 
 - The investigation used the supplied training dataset and schema.
 - The business meaning of every unusual value has not yet been confirmed.
+- The currency associated with the recorded monetary values has not been independently confirmed.
 - Recorded order and item values are not proof of lost revenue.
 - The cause of each missing reference has not yet been established.
 - No original records were deleted or modified as part of this diagnosis.
