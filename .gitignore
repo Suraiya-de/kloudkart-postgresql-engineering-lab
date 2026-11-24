@@ -1,0 +1,27 @@
+
+# Original and local datasets
+data/
+*.csv
+*.tsv
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+
+# Database backups and dumps
+*.dump
+*.backup
+*.sql.gz
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
