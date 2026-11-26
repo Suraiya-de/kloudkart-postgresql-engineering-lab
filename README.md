@@ -201,10 +201,10 @@ Reproducing the investigation requires authorised access to the supplied trainin
 - [x] Technical decisions and trade-offs documentation.
 - [x] Business memo.
 - [x] Additional data-quality monitoring improvement.
-- [ ] Final end-to-end validation and submission review.
+- [x] Final end-to-end validation and submission review.
 
 ## Project Status
 
-The four core SQL requirements have been implemented and tested. The data diagnosis, technical decisions and business memo are documented. An additional reusable data-quality monitoring view has also been implemented and tested with 12 checks.
+All four core SQL requirements have been implemented and tested. The data diagnosis, technical decisions and business memo are documented. An additional reusable data-quality monitoring view has been implemented and verified with 12 checks.
 
-The remaining work is final end-to-end validation and submission review.
+Final database validation and repository review are complete. 
