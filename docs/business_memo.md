@@ -16,25 +16,25 @@ These findings indicate areas requiring attention. They should not automatically
 
 **1. Order and customer data integrity**
 
-The database contains 190 orders referencing missing customers and 692 order-item records referencing 689 missing order IDs.
+The database contains 210 orders referencing 190 distinct missing customer IDs and 692 order-item records referencing 689 missing order IDs.
 
 These records can affect the reliability of order reporting and make it difficult to trace some transactions to their associated customers or orders.
 
 **2. Inconsistent order statuses**
 
-Completed and cancelled orders use different status spellings, including `complete` and `completed`, as well as `canceled` and `cancelled`.
+Order statuses include inconsistent spellings such as `complete` and `completed`, and `canceled` and `cancelled`. The customer spending report currently includes only normalised `completed` orders; `complete` remains unconfirmed and is not combined with it.
 
 This can cause reporting discrepancies when queries recognise only one spelling.
 
 **3. Inventory data concerns**
 
-The initial investigation identified 14 products with negative stock quantities and 577 products with zero stock.
+The original investigation observed 14 products with negative stock and 577 products with zero stock. Zero stock can be legitimate and is not itself classified as a data defect. These counts need fresh-load verification before remediation.
 
 There are also inventory movements referencing missing products. These issues reduce confidence in inventory visibility and should be investigated before stock figures are used for important operational decisions.
 
 **4. Category hierarchy problems**
 
-The category structure contains a circular relationship between two categories and a separate category referencing a missing parent.
+The original investigation observed a cycle between categories 9001 and 9002, and a separate category (9003) referencing missing parent 8999. It also recorded 37 products with NULL category IDs, which are omitted from category roll-ups. These findings need fresh-load verification.
 
 These defects can affect category-based inventory reporting.
 
@@ -45,16 +45,16 @@ These defects can affect category-based inventory reporting.
 - **Better inventory visibility:** Low-stock reporting traverses nested categories and identifies hierarchy defects.
 - **Inventory auditability:** Controlled inventory adjustments update stock and create corresponding audit records within the same transaction.
 
-The implementations were tested against the supplied lab requirements, including concurrent purchase scenarios and inventory adjustment validation.
+The SQL implementations and monitoring view are included in the repository. Runtime test and performance evidence is not available in the current repository; see [Validation Evidence](validation_evidence.md).
 
 ## Business Recommendations
 
 1. Investigate orphan records and establish the correct business treatment before attempting corrections.
 2. Standardise order statuses across applications and reporting.
 3. Investigate the 14 products with negative stock quantities and determine whether corrections are justified.
-4. Confirm the correct parent categories before resolving the detected hierarchy defects.
+4. Confirm the correct parent categories and assign unclassified products only from authoritative records.
 5. After reviewing existing exceptions, introduce appropriate foreign keys, NOT NULL constraints and validation rules.
-6. Introduce recurring checks for orphan records, invalid stock balances and inconsistent status values.
+6. Introduce recurring checks for orphan records, negative stock and inconsistent status values; treat zero stock as an availability signal unless business policy defines it otherwise.
 
 ## Conclusion
 

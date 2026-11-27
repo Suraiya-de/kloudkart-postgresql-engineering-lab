@@ -7,10 +7,12 @@
 BEGIN;
 
 -- Index to support completed-order reporting.
-CREATE INDEX IF NOT EXISTS idx_orders_completed_spending
+DROP INDEX IF EXISTS public.idx_orders_completed_spending;
+
+CREATE INDEX idx_orders_completed_spending
 ON public.orders (order_date, customer_id)
 INCLUDE (total_amount)
-WHERE LOWER(TRIM(status)) IN ('complete', 'completed')
+WHERE LOWER(TRIM(status)) = 'completed'
   AND order_date IS NOT NULL;
 
 
@@ -25,7 +27,7 @@ WITH eligible_orders AS (
     FROM public.orders o
     INNER JOIN public.customers c
         ON c.customer_id = o.customer_id
-    WHERE LOWER(TRIM(o.status)) IN ('complete', 'completed')
+    WHERE LOWER(TRIM(o.status)) = 'completed'
       AND o.order_date >= CURRENT_TIMESTAMP - INTERVAL '12 months'
       AND o.order_date <= CURRENT_TIMESTAMP
       AND o.total_amount IS NOT NULL

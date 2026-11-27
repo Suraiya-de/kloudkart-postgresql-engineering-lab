@@ -8,6 +8,8 @@ The purpose of this diagnosis is to identify existing data-integrity and consist
 
 The investigation was performed against the supplied database before making any data modifications.
 
+The source dataset and schema are not included in this repository and were not available for a fresh database check during the final repository review. Counts and category identifiers described below as prior observations must be rechecked after loading the authorized course dataset before being used for remediation.
+
 ## 2. Investigation Approach
 
 The investigation covered six database tables:
@@ -28,6 +30,8 @@ The following techniques were used:
 - Aggregate queries to quantify affected records.
 - Date-range analysis to understand the period covered by affected records.
 - Grouping and normalisation of order statuses to identify inconsistent representations.
+- Recursive parent traversal with a visited-ID path to detect category cycles safely.
+- Direct checks for negative stock and products without a category assignment.
 
 The read-only integrity checks are included in `sql/diagnostics/integrity_checks.sql`. They investigate potential problems without modifying or cleaning the source data.
 
@@ -57,6 +61,9 @@ This is a structural weakness that permits referential-integrity problems to ent
 | Inventory logs referencing missing products | 120 | High |
 | Category referencing missing parent | 1 | Low |
 | Inconsistent order status representations | 15 distinct raw representations | High, conditional reporting risk |
+| Products with negative stock | 14 previously observed | High, operational risk |
+| Categories in a parent cycle | Categories 9001 and 9002 previously observed | Medium, reporting risk |
+| Products with NULL category IDs | 37 previously observed | Medium, category-report coverage risk |
 
 The initial checks also found:
 
@@ -66,6 +73,8 @@ The initial checks also found:
 - No order items with quantities less than or equal to zero.
 
 These zero-count results only establish that the specific conditions tested were not found. They do not prove that every aspect of those tables is valid.
+
+The original investigation also observed 577 products with zero stock. Zero stock can be legitimate and is not classified as a data defect here. The counts in this summary are prior observations and require fresh-load verification; the checks below provide repeatable methods for the newly documented stock and hierarchy findings.
 
 ## 4. Costing Assumptions and Business Impact
 
@@ -108,6 +117,8 @@ The estimates indicate that investigating the missing-order references requires 
 The inconsistent statuses have a lower estimated initial review cost because the investigation can begin by examining the 15 distinct raw representations rather than manually reviewing every order.
 
 These figures are estimates of investigation effort. They should not be interpreted as a complete measure of the business impact or the cost of resolving each fault.
+
+The investigation-cost table does not estimate effort for negative-stock, cycle or unassigned-category findings because no review-time assumptions for those investigations were recorded.
 
 ### 4.3 Monetary Exposure Requiring Reconciliation
 
@@ -361,6 +372,68 @@ The estimate covers the initial review of the 15 raw representations. It does no
 
 Introduce a controlled set of permitted status values and standardise incoming values. Confirm the business meaning of each status with Nana before merging aliases. Update reporting queries to use the approved definitions and validate the results against the original records.
 
+Until that business clarification is available, the implemented customer spending report uses only `LOWER(TRIM(status)) = 'completed'`. The separate `complete` group remains unconfirmed and is excluded.
+
+### 5.6 Products with Negative Stock
+
+**Priority: High, operational risk**
+
+**1. What is wrong**
+
+The original investigation reported 14 products with `stock_quantity < 0`. The product identifiers and individual negative quantities were not retained in the repository, so they require fresh-load verification.
+
+**2. How it was found**
+
+The reproducible check is `negative_stock` in `sql/diagnostics/integrity_checks.sql`; it counts products where `stock_quantity < 0` without changing source data.
+
+**3. Business impact and risk**
+
+Negative balances can make stock visibility unreliable and may conceal discrepancies between recorded and physical inventory. The actual products, quantities and operational consequences have not been rechecked. The original investigation also reported 577 products at zero stock; zero stock may be legitimate and is not treated as a data defect by this diagnosis.
+
+**4. What should be done**
+
+Verify the current affected products against authorized stock records before correcting balances. Do not infer adjustments from the count alone.
+
+### 5.7 Category Parent Cycle
+
+**Priority: Medium, reporting risk**
+
+**1. What is wrong**
+
+The original investigation identified a parent cycle between categories 9001 and 9002. These are the two previously observed cycle members; the current database was not available to confirm that the cycle remains present.
+
+**2. How it was found**
+
+The `categories_in_parent_cycles` check in `sql/diagnostics/integrity_checks.sql` recursively follows each category's parent, tracks visited IDs in an array, and stops recursing after a repeated ID is detected. The check counts distinct category IDs in detected cycles.
+
+**3. Business impact and risk**
+
+A cycle makes category ancestry ambiguous. The recursive low-stock function detects and flags affected roll-ups; the previous technical review recorded that six products directly assigned to category 9001 can appear in both cycle-category totals. Do not add those category totals as if they represented separate products.
+
+**4. What should be done**
+
+Confirm the intended parent relationship from authoritative category records, then agree a repair before changing either parent ID. Re-run the cycle check after any approved repair.
+
+### 5.8 Products Without a Category Assignment
+
+**Priority: Medium, category-report coverage risk**
+
+**1. What is wrong**
+
+The original investigation reported 37 products whose `category_id` is NULL. Their product IDs and stock values were not retained here and need fresh-load verification.
+
+**2. How it was found**
+
+The `products_without_category` check counts rows where `products.category_id IS NULL`. This is separate from the existing `orphan_products` check, which detects non-NULL category IDs with no matching category.
+
+**3. Business impact and risk**
+
+Products without a category are omitted from `low_stock_by_category()` because the roll-up starts from category rows and joins products by category ID. They therefore do not contribute to category-level product or stock totals. This is a reporting-coverage issue; the correct category cannot be inferred from NULL alone.
+
+**4. What should be done**
+
+Use authoritative product records to determine whether each product should be assigned to a category. Do not assign categories by guesswork. Re-run the check and category report after approved updates.
+
 ## 6. Danger Ranking
 
 The following is a provisional risk ranking based on the available evidence, potential business consequences and estimated investigation effort. It is not a ranking of confirmed financial losses. The actual impact of some findings depends on how Kloud Kart's reports and operational processes use the affected records.
@@ -369,11 +442,14 @@ The following is a provisional risk ranking based on the available evidence, pot
 |---:|---|---|---|
 | 1 | Order items referencing missing orders | High | 692 affected records and 826,327.80 in associated item value cannot be reconciled through their orders. |
 | 2 | Orders referencing missing customers | High | 210 orders with a combined recorded value of 665,180.61 cannot reliably be attributed to customers, potentially affecting the Monday report. |
-| 3 | Inconsistent order statuses | High, conditional | Up to 66,975 records in the `completed` group are not matched by an exact lowercase `completed` filter. The actual report-filtering impact remains unconfirmed. |
-| 4 | Inventory logs referencing missing products | High | 120 stock movement records cannot be traced to valid products, weakening inventory auditing and reconciliation. |
-| 5 | Missing category parent | Low | Breaks a hierarchy relationship, although no direct products or child categories are currently affected. |
+| 3 | Products with negative stock | High, conditional | 14 products were previously observed below zero; current balances and consequences require fresh-load verification. |
+| 4 | Inconsistent order statuses | High, conditional | Up to 66,975 records in the `completed` group are not matched by an exact lowercase `completed` filter. The actual report-filtering impact remains unconfirmed. |
+| 5 | Inventory logs referencing missing products | High | 120 stock movement records cannot be traced to valid products, weakening inventory auditing and reconciliation. |
+| 6 | Category parent cycle | Medium | Categories 9001 and 9002 were previously observed in a cycle that can make roll-up totals overlap; the report flags affected categories. |
+| 7 | Products without a category assignment | Medium | 37 products were previously observed outside category roll-ups, reducing category-report coverage. |
+| 8 | Missing category parent | Low | Breaks a hierarchy relationship, although no direct products or child categories were previously observed beneath category 9003. |
 
-The first two findings have the largest recorded monetary exposure and may affect important business reporting. The status issue could also have a substantial reporting impact if exact status filters are used. The inventory-log issue weakens the audit trail for stock movements.
+The first two findings have the largest recorded monetary exposure and may affect important business reporting. Negative stock can affect operational decisions, while the status issue carries conditional reporting risk. The inventory-log issue weakens the audit trail for stock movements. Risks for the cycle and unassigned products concern category reporting rather than confirmed financial loss.
 
 The ranking should be reviewed when the actual report definitions, business status rules and reconciliation results are confirmed.
 
@@ -384,9 +460,10 @@ The investigation-cost ranking remains unchanged when the assumed investigation 
 1. Investigate and reconcile orphan records using authorised historical records before deleting or changing any data.
 2. Review the database relationships and introduce appropriate foreign-key constraints after resolving existing violations. Validate existing data before enforcing the constraints.
 3. Establish an approved order-status vocabulary. Confirm the business meaning of similar values before standardising existing records, then enforce valid values using an appropriate database constraint or reference table.
-4. Review and repair the category hierarchy, confirming the correct parent for category 9003.
-5. Add validation to data-loading processes so missing references and invalid values are detected before entering operational tables.
-6. Establish recurring data-quality checks to identify new integrity problems and monitor the quality of operational data.
+4. Investigate the previously observed negative stock and reconcile balances against authoritative records before making adjustments.
+5. Review the category cycle, missing parent and unassigned products; confirm intended relationships before changing them.
+6. Add validation to data-loading processes so missing references and invalid values are detected before entering operational tables.
+7. Establish recurring data-quality checks to identify new integrity problems and monitor the quality of operational data. Treat zero stock as an availability signal unless business policy says otherwise.
 
 ## 8. Investigation Limitations
 
