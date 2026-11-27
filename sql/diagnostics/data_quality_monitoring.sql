@@ -2,7 +2,10 @@
 -- Kloud Kart: Improvement beyond the brief
 -- Reusable data-quality monitoring view
 --
--- Input:    solutions 01-04 (uses low_stock_by_category()).
+-- Input:    solution 00 (is_standard_status()) and solution 03
+--           (low_stock_by_category()). The unlogged_stock_updates
+--           check only counts anything once solution 04's audit
+--           trigger is deployed.
 -- Produces: public.data_quality_monitoring, one row per check.
 -- Asserts:  read-only; on a fresh load every count matches the
 --           data diagnosis (see docs/validation_evidence.md).
@@ -127,9 +130,7 @@ checks AS (
         'Orders whose status is not exactly one of the standard lower-case values'
     FROM public.orders
     WHERE status IS NULL
-       OR status NOT IN (
-           'pending', 'shipped', 'completed', 'cancelled', 'refunded'
-       )
+       OR NOT public.is_standard_status(status)
 
     UNION ALL
 

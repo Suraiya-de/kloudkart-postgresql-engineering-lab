@@ -576,5 +576,5 @@ SELECT
     (SELECT SUM(oi.quantity)
      FROM public.order_items oi
      JOIN public.orders o USING (order_id)
-     WHERE LOWER(BTRIM(o.status)) NOT IN ('cancelled', 'canceled'))
+     WHERE NOT public.is_cancelled_status(o.status))
         AS order_line_units_not_cancelled;
