@@ -95,7 +95,7 @@ The first four threaten the two things Nana asked about: whether stock can be tr
 
 **Why it matters.** Excluding `complete` drops the Monday report from 339.18M to 271.18M (20.0%) and replaces 24 of the top 100 customers. An exact `status = 'completed'` filter is worse still: it finds 22,044 of 111,190 sales (19.8%), worth 19.6% of the true spend.
 
-**Cost if this decision is wrong.** If `complete` turns out to mean something else (for example, "delivered but not paid"), the report overstates spend by 68.00M as of 31 August 2026. That is why it is listed in the memo as an assumption to confirm, and why a single line in solution 02 controls it.
+**Cost if this decision is wrong.** If `complete` turns out to mean something else (for example, "delivered but not paid"), the report overstates spend by 68.00M as of 31 August 2026. That is why it is listed in the memo as an assumption to confirm, and why the rule is defined in one place, `is_sale_status()` in `sql/solutions/00_business_rules.sql`.
 
 **What to do.** Agree one vocabulary of statuses, convert existing rows, and add a check constraint so new spellings cannot be written.
 

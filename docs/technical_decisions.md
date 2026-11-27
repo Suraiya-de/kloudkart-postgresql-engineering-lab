@@ -106,7 +106,7 @@ Adwoa's actual query was not supplied, so the first row is a reconstruction of t
 
 | Decision | Choice | Cost if wrong |
 |---|---|---|
-| Which orders are sales | Status `completed` or `complete`, ignoring case and spaces (diagnosis 3.2) | If `complete` means something else, spend is overstated by 68.00M (as of 31 August 2026). One line in the function controls it. |
+| Which orders are sales | Status `completed` or `complete`, ignoring case and spaces (diagnosis 3.2) | If `complete` means something else, spend is overstated by 68.00M (as of 31 August 2026). The rule is defined once, in `is_sale_status()` (`sql/solutions/00_business_rules.sql`), and used by the report, the diagnosis, the tests and the benchmark. |
 | Spend figure | `orders.total_amount`, the amount charged at checkout, not the sum of lines (diagnosis 3.3) | If finance defines revenue as the sum of lines, the report differs by 1.27M. |
 | "Total spent" and "order count" | All completed orders up to the report date, not just the last 12 months | If Adwoa wants 12-month totals, the ranking changes; the monthly columns already give the 12-month view. |
 | The 12 months | The 12 calendar months ending in the report month; the last month is month-to-date | A rolling 365-day window would split months at both ends, which is why the previous version showed 13 month labels. |
@@ -164,6 +164,7 @@ Nana's team lives with these. Each is documented in its script header.
 |---|---|---|---|
 | Sequences as defaults for `orders.order_id`, `order_items.order_item_id`, `inventory_log.log_id` | 01 | The tables had no ID generator | `ALTER COLUMN ... DROP DEFAULT` |
 | `products_stock_non_negative` check, `NOT VALID` | 01 | Database-level backstop against overselling | `ALTER TABLE products DROP CONSTRAINT products_stock_non_negative` |
+| `is_sale_status` function | 00 | One shared definition of a sale | `DROP FUNCTION` (after the report) |
 | `place_order`, `customer_spending_report`, `low_stock_by_category`, `record_inventory_movement` functions | 01-04 | The four requirements | `DROP FUNCTION` |
 | `customer_spending_top100` and `data_quality_monitoring` views | 02, monitoring | Ready-made views for Adwoa and Nana | `DROP VIEW` |
 | `trg_products_stock_audit` trigger | 04 | Audit safety net | `DROP TRIGGER trg_products_stock_audit ON products` |
