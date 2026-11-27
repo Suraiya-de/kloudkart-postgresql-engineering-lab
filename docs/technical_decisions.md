@@ -1,229 +1,181 @@
 # Technical Decisions and Trade-offs
 
-## 1. Introduction
+This document explains how each of Nana's four requirements was met, what was rejected and why, and every point where the brief left a decision open. Measurements come from a fresh load on a laptop; the raw output is in [`docs/evidence/`](evidence/) and summarised in [Validation Evidence](validation_evidence.md).
 
-This document explains the key technical decisions made while implementing the four PostgreSQL engineering requirements for Kloud Kart.
+## 1. Summary
 
-The solutions were designed around the existing database structure and observed data-quality issues. The implementation prioritises transaction safety, accurate reporting, query performance, hierarchy visibility and inventory traceability without making assumptions that could damage existing data.
+| Requirement | Mechanism | Measured result |
+|---|---|---|
+| No overselling | `place_order()`: one conditional `UPDATE` that checks and deducts stock together, plus a `CHECK (stock_quantity >= 0)` backstop | Course race test passed 3/3; 400 orders on one product in 3.3-3.4 s, none oversold |
+| Fast Monday report | `customer_spending_report(p_as_of)`: one set-based pass with window functions | 40,420 customers in 1.38 s (median), against about 3 hours for the per-customer approach |
+| Low-stock roll-up | `low_stock_by_category()`: recursive walk of any depth with a cycle guard | 4 ms |
+| Proof of what happened | Every inventory function writes `inventory_log`; a trigger logs any other update to a product's stock | Verified by `sql/tests/verify_solution.sql` |
 
-## 2. Concurrency-Safe Order Placement
+## 2. Stopping the overselling
 
-**Implementation:** `sql/solutions/01_place_order.sql`
+**Implementation:** [`sql/solutions/01_place_order.sql`](../sql/solutions/01_place_order.sql)
 
-### Decision: Conditional stock updates
+### How it works
 
-The `place_order()` function uses a conditional `UPDATE` to deduct stock only when sufficient inventory is available.
+The check and the deduction are one statement:
 
-The update checks the available quantity and performs the deduction as one database operation.
+```sql
+UPDATE products
+SET stock_quantity = stock_quantity - p_quantity
+WHERE product_id = p_product_id
+  AND stock_quantity >= p_quantity;
+```
 
-This prevents two concurrent transactions from successfully purchasing the same final units.
+When two buyers arrive together, the first `UPDATE` takes the product row's lock. The second waits. When the first commits, PostgreSQL re-evaluates the second buyer's `WHERE` clause against the new committed stock (the standard `READ COMMITTED` re-check). With the last unit gone, the condition is false, no row is updated, and the function returns `success = false` with "Out of stock". Nobody receives an error, and nobody gets a unit that does not exist.
 
-### Why this approach was selected
+The order, its line and its `inventory_log` row are written in the same transaction as the deduction, so there is never an order without its stock movement or a movement without its order.
 
-A separate operation that first reads the stock quantity and then updates it could allow concurrent transactions to observe the same available stock before either transaction completes its update.
+### Defence in depth
 
-The conditional update makes the stock check and deduction atomic. PostgreSQL's row-level locking ensures competing updates are handled safely.
+`products_stock_non_negative` is a `CHECK (stock_quantity >= 0)` constraint added `NOT VALID`. It applies to every new write, from any source, without rejecting the 14 historical negative balances, which are evidence to reconcile rather than overwrite (diagnosis 3.4). If a future code path forgets the conditional update, the database refuses the write instead of overselling.
 
-### Transaction handling
+Side effect for Nana's team: until those 14 products are corrected, any edit to them (even a price change) fails while their stock is still negative. That is deliberate, because it forces the correction to happen first.
 
-Order creation, order-item insertion, inventory deduction and inventory-log insertion are performed within the function's transaction context.
+### Would triggers alone have fixed it?
 
-This ensures that a failed operation does not leave a partially created order or an inventory deduction without its corresponding records.
+No, not as triggers are usually proposed. The usual suggestion is a trigger on `order_items` that reads the stock and raises an error if it is too low. That is a read followed by a write: two buyers both read "1 left", both pass the check, and both deduct. That is exactly the race that oversold the best-seller twice. A trigger runs inside the same racing transactions; it adds no ordering of its own.
 
-### Identifier generation
+A trigger *can* be made correct by putting the same conditional `UPDATE` inside it, but then the trigger is not what fixed anything; the conditional update is. And a trigger can only refuse by raising an error, which reaches the customer as a failure, not the clear "out of stock" Nana promised. The course test treats such an error as a failed test.
 
-Sequences were introduced for the order, order-item and inventory-log identifiers because the original tables did not have suitable automatic identifier defaults.
+Triggers are the right tool for the other half of the problem, the audit trail (section 5), and they are used there.
 
-The sequences were initialised using existing maximum identifiers to avoid collisions with existing records.
+### Alternatives rejected
 
-### Alternatives considered
+| Alternative | Why not |
+|---|---|
+| Read stock, then update | The race that caused the overselling. |
+| `SELECT ... FOR UPDATE`, then update | Correct, but two statements where one does the job, and the lock is held for longer. |
+| `SERIALIZABLE` isolation | Correct, but losing buyers get serialization failures that must be retried. Under a 400-buyer spike most would retry repeatedly, and the course test fails if one reaches the client. |
+| Advisory locks | Correct, but a second locking scheme that every future code path must remember to use. |
+| `FOR UPDATE NOWAIT` or `SKIP LOCKED` | Would tell buyers "out of stock" while stock remains, just because someone else was mid-purchase. |
+| Locking the whole products table | Would make a flash sale on one product block every other product. |
+| Checking stock in the application | Several application servers would each need to coordinate; the database is the one place all of them share. |
 
-- **Read stock, then update:** Not selected because the separate read and write create a concurrency risk unless additional locking and validation are used.
-- **Application-side stock validation:** Not selected as the primary protection because database-level enforcement is more reliable when multiple clients access the database.
-- **Explicit table locking:** Not selected because it would unnecessarily restrict unrelated order operations.
+### Flash-sale behaviour
 
-### Trade-offs and limitations
+Marketing expects about 400 orders in ten seconds on one product. Every buyer of that product queues on one row lock, so the question is whether the queue drains in time.
 
-The implementation uses PostgreSQL row-level locking, which allows transactions involving different products to proceed independently.
+| Test | Result |
+|---|---|
+| Course race test, 400 buyers for 50 units, 3 runs | 50 sold, 350 refused, 0 errors; 4.2-4.7 s |
+| `scripts/flash_sale_benchmark.py`, 400 buyers for 400 units, 3 runs | 400 sold, 0 errors, 400 log rows; 3.3-3.4 s; median wait 1.7-1.8 s, slowest buyer 3.2-3.4 s |
 
-The function uses `pending` as the initial order status because the supplied database does not establish a payment-confirmation workflow.
+What survives: correctness under any level of contention, and 400 orders in under five seconds on a laptop. What would fail first is not the locking but the connections. The test opens 400 database connections at once; PostgreSQL's default limit is 100, and the lab server was configured with 500 to run it. In production the application must use a connection pool (a few dozen connections serving many buyers), so buyers wait in the pool's queue rather than being refused a connection. That is a configuration task for Nana's developers, not new infrastructure, and it is listed in the memo as unverified.
 
-The function does not implement payment processing or order cancellation and refund workflows.
+### Other decisions
 
-The conditional update provides the no-oversell guarantee for concurrent requests that target the same product. The repository contains no race-test script or run output, so the 400-buyer, 50-unit result and the 400-orders-in-10-seconds target are not verified here. See [Validation Evidence](validation_evidence.md).
+- **New orders start as `pending`.** The brief describes no payment step. Because the report counts only completed orders, an order placed today appears in the report once it is marked completed.
+- **ID sequences.** The supplied tables have no ID generators. Sequences start after the highest existing ID, so no historical row is reused.
 
-## 3. Customer Spending Report
+## 3. The Monday report
 
-**Implementation:** `sql/solutions/02_customer_spending_report.sql`
+**Implementation:** [`sql/solutions/02_customer_spending_report.sql`](../sql/solutions/02_customer_spending_report.sql)
 
-### Decision: A database view with common table expressions
+### Shape
 
-The customer spending report is implemented as a PostgreSQL view using CTEs to separate eligibility filtering, customer aggregation, ranking and monthly reporting.
+`customer_spending_report(p_as_of)` returns one row per customer per month for the 12 calendar months ending in the report month: 485,040 rows for 40,420 customers. Each row carries the customer's rank, total spent, order count, that month's spend and the running total. `customer_spending_top100` is a view of the top 100 as of today.
 
-This makes the reporting logic easier to inspect and maintain.
+Ranking, totals, monthly spend and running totals come from one pass over the orders, using an aggregate with `FILTER` and two window functions, instead of a separate lookup for each customer and month.
 
-### Customer eligibility
+### Why it was slow, and why a bigger server would not fix it
 
-The report recognises only the normalised `completed` status (`LOWER(TRIM(status)) = 'completed'`).
+The usual hand-built version of this report computes each figure with its own lookup: for each of 40,420 customers, for each of 12 months, find that customer's orders. Without an index, each lookup reads all 159,384 orders. That is roughly 485,000 table scans.
 
-The separate `complete` status remains excluded because its business meaning has not been confirmed. This conservative rule may omit orders that the business later determines should qualify; confirm the rule with Nana before broadening eligibility. Formatting variants of `completed` remain eligible after lowercasing and trimming.
+| Version | Time |
+|---|---|
+| Per-customer lookups, no index | 27.3 s per 100 customers, so about 3 hours for all customers (extrapolated) |
+| Per-customer lookups, index on customer | 46 ms per 100 customers, about 18 s for all (extrapolated) |
+| **Set-based, as shipped** | **1.38 s for all customers (median of 5)** |
+| Set-based plus a covering index | 1.28 s (7% faster) |
+| Set-based with more sort memory | 1.47 s (not faster) |
 
-The report also:
+Adwoa's actual query was not supplied, so the first row is a reconstruction of the usual shape, not her code; it lands in the same range as her 40 minutes. The point holds whatever the exact query: a server twice as fast turns 3 hours into 1.5. The cost grows with customers times months times orders, and Kloud Kart is growing on all three. The fix is to stop asking the database the same question 485,000 times, and that costs nothing.
 
-- Excludes future-dated orders.
-- Uses a rolling trailing 12-month timestamp window.
-- Excludes orders without a valid matching customer.
-- Excludes orders with a NULL total amount.
+### Knowing when to stop
 
-These rules prevent questionable records from silently affecting customer spending totals.
+- **No index was added for the report.** A covering index saved about 100 ms on a once-a-week report, but every index on `orders` is extra work on every insert, including 400 inserts in ten seconds during a flash sale. The trade is not worth it.
+- **No memory tuning.** The plan shows the sorts spilling to disk, but keeping them in memory made the report no faster. The remaining time is real work on 485,040 output rows.
+- **No materialised (pre-computed) copy.** At 1.4 s there is nothing to cache, and a cached copy can be stale on the Monday it matters.
 
-The report returns at most 100 customers with qualifying orders. It uses `ROW_NUMBER()` ordered by total spending descending and then `customer_id` ascending, so ties at the cutoff are broken by customer ID rather than expanding the report beyond 100 customers.
+### Decisions the brief left open
 
-### Decision: Partial covering index
+| Decision | Choice | Cost if wrong |
+|---|---|---|
+| Which orders are sales | Status `completed` or `complete`, ignoring case and spaces (diagnosis 3.2) | If `complete` means something else, spend is overstated by 68.00M (as of 31 August 2026). One line in the function controls it. |
+| Spend figure | `orders.total_amount`, the amount charged at checkout, not the sum of lines (diagnosis 3.3) | If finance defines revenue as the sum of lines, the report differs by 1.27M. |
+| "Total spent" and "order count" | All completed orders up to the report date, not just the last 12 months | If Adwoa wants 12-month totals, the ranking changes; the monthly columns already give the 12-month view. |
+| The 12 months | The 12 calendar months ending in the report month; the last month is month-to-date | A rolling 365-day window would split months at both ends, which is why the previous version showed 13 month labels. |
+| Running total | Starts from the customer's spend before the window, so the final month equals total spent | Adwoa may have tracked it from zero; the monthly figures allow either. The match is a built-in check. |
+| Report date | A parameter, defaulting to today | This extract ends on 31 August 2026, so "today" shows three empty months. `customer_spending_report('2026-08-31 23:59:59')` reproduces the report as of the end of the data, and any past Monday can be re-run. |
+| Future-dated orders | Excluded until their date | They will appear when their date arrives (diagnosis 3.8). The monitoring view flags them. |
+| Orders whose customer does not exist | Excluded | 388,780.89 of completed sales are not in any customer's total (diagnosis 3.5). |
+| Customers with no orders | Included with zero | The report really is "every customer"; filter on `order_count > 0` if not wanted. |
+| Ties in rank | Broken by customer ID, so the top 100 is always exactly 100 | Two customers with identical spend at position 100 and 101 are ordered arbitrarily but consistently. |
+| Duplicate customer records | Not merged | One top-100 place is affected on this data (diagnosis 3.9). |
 
-A partial index was created on the order date and customer identifier, including the total amount.
+### Verification
 
-The index is restricted to the same eligible status rule (`LOWER(TRIM(status)) = 'completed'`) and non-NULL order dates.
+`sql/tests/verify_solution.sql` asserts that the report has exactly 12 rows per customer, that every customer's final running total equals their total spent, and that the grand total (339,176,836.88) equals an independent sum of the same orders.
 
-This reduces the index entries relevant to the report and can reduce the need to retrieve values directly from the table.
+## 4. Low-stock roll-up
 
-### Why this approach was selected
+**Implementation:** [`sql/solutions/03_low_stock_category_rollup.sql`](../sql/solutions/03_low_stock_category_rollup.sql)
 
-A full index would include orders that the report does not use.
+`low_stock_by_category(p_threshold)` walks upwards from every category to each of its ancestors with a recursive query, then totals products and low-stock products (stock at or below the threshold, default 5) under every ancestor. Electronics therefore includes Phones, Phone Accessories and Cases, at whatever depth marketing adds next.
 
-The partial index focuses on the records relevant to the report, while the included total amount can help PostgreSQL satisfy parts of the query using an index-only scan.
+- **No hard-coded depth.** The recursion stops when a category has no parent.
+- **Termination guard.** Each walk carries the list of categories already visited and stops the moment one repeats. The real cycle between categories 9001 and 9002 is flagged on both rows, not looped on.
+- **No double counting.** Each (category, ancestor) pair is counted once, and products are joined only to their own category.
+- **Nothing hidden.** Products with no category appear on a separate "no category assigned" line; categories with a missing parent are flagged.
+- **Indexes removed.** The first deployed version created indexes on `categories.parent_id` and `products.category_id`. The measured plan used neither; with 94 categories and 4,023 products, reading the tables directly is faster. Both were dropped so they cost nothing on writes.
 
-No `EXPLAIN ANALYZE` plan or before-and-after timing is included in the repository. Performance benefit is therefore unverified; see [Validation Evidence](validation_evidence.md) for the repeatable measurement procedure.
+Verification: the Electronics total (1,238 products) matches an independent top-down walk, and the root categories plus the uncategorised line plus the cycle members add up to all 4,023 products. The roll-up runs in about 4 ms.
 
-### Alternatives considered
+Rejected: fixed-depth joins (break when marketing adds a level), a stored path or closure table (faster at millions of categories, but another structure the team must keep in step on every change), and silently repairing the cycle (the correct parent is a business decision).
 
-- **A full index on all orders:** Not selected because it would index many records excluded from this report.
-- **A materialized view:** Not selected because the report uses a rolling time window and a regular view avoids the need for a separate refresh process.
-- **Calculating the report entirely in application code:** Not selected because aggregation and ranking are naturally handled by PostgreSQL and should remain close to the data.
+## 5. The audit trail
 
-### Trade-offs and limitations
+**Implementation:** [`sql/solutions/04_auditable_inventory_movements.sql`](../sql/solutions/04_auditable_inventory_movements.sql)
 
-The report generates calendar-month values covering the rolling 12-month timestamp window. Because the window can begin and end partway through a month, it can contain portions of 13 calendar months.
+### Two layers
 
-The view calculates its reporting window dynamically when queried.
+1. **The functions record why.** `place_order()` writes a `sale` row naming the order. `record_inventory_movement()` handles `restock`, `return`, `correction`, `damage` and `stock_take`, the reasons already in the data. It checks that the quantity's sign suits the reason, requires a note, locks the product row, and writes the stock change and its log row in one transaction. A refused movement changes nothing.
+2. **The trigger records every other update.** `trg_products_stock_audit` fires on any update to an existing product's `stock_quantity`. If the change did not come through one of the functions, it writes an `unlogged_update` row with the database user and the before and after values. The functions set a transaction-local flag around their own update so they are not logged twice.
 
-Its performance may change as the database grows, so execution plans should be reviewed periodically.
+The second layer exists because of the diagnosis: 144 products drifted from their ledger (diagnosis 3.1) because something changed stock without writing a row. With the trigger in place, that cannot happen silently again.
 
-## 4. Recursive Low-Stock Category Reporting
+### Choices
 
-**Implementation:** `sql/solutions/03_low_stock_category_rollup.sql`
+- **Log rather than block.** A trigger could forbid direct updates instead. During an incident, operations staff may need to fix a stock figure quickly; blocking them invites workarounds. Logging lets the fix happen and makes it visible, and the monitoring view counts `unlogged_update` rows every Monday.
+- **Not trigger-only logging.** If the trigger wrote every row, it could not know whether a deduction was a sale, damage or a correction. The function knows, so it writes the row.
+- **Limits.** The trigger covers updates only: opening stock on a newly created product and a deleted product leave no movement row (new products should be created at zero and stocked through a `restock`). The flag is a guard against mistakes, not against a database administrator determined to hide a change. The log records the database user, not the person behind the application. Rows in `inventory_log` can still be edited or deleted by anyone with table rights; the next step is to remove `UPDATE` and `DELETE` on that table from the application's database user.
+- **Stock-takes.** The existing log has no field for a counted quantity, so `stock_take` records an event with zero change; a physical count that differs is recorded as a `correction`.
 
-### Decision: Recursive common table expression
+## 6. Schema changes left behind
 
-The `low_stock_by_category()` function uses a recursive CTE to traverse category relationships and aggregate product stock through category ancestors.
+Nana's team lives with these. Each is documented in its script header.
 
-The default low-stock threshold is five units or fewer, while callers can supply another threshold.
+| Change | Script | Why | To undo |
+|---|---|---|---|
+| Sequences as defaults for `orders.order_id`, `order_items.order_item_id`, `inventory_log.log_id` | 01 | The tables had no ID generator | `ALTER COLUMN ... DROP DEFAULT` |
+| `products_stock_non_negative` check, `NOT VALID` | 01 | Database-level backstop against overselling | `ALTER TABLE products DROP CONSTRAINT products_stock_non_negative` |
+| `place_order`, `customer_spending_report`, `low_stock_by_category`, `record_inventory_movement` functions | 01-04 | The four requirements | `DROP FUNCTION` |
+| `customer_spending_top100` and `data_quality_monitoring` views | 02, monitoring | Ready-made views for Adwoa and Nana | `DROP VIEW` |
+| `trg_products_stock_audit` trigger | 04 | Audit safety net | `DROP TRIGGER trg_products_stock_audit ON products` |
+| Indexes from earlier versions dropped | 02, 03 | Measured to give no worthwhile benefit | Recreate if a future plan shows a need |
 
-### Why this approach was selected
+No foreign keys or `NOT NULL` constraints were added. Each would fail on the existing violations (diagnosis section 3) or force guessed repairs. They are recommended after the data is reconciled.
 
-The category structure can contain multiple levels. A fixed number of joins would limit the depth of the hierarchy and make future structural changes harder to accommodate.
+## 7. What a naive build would have cost later
 
-A recursive CTE provides a flexible way to traverse arbitrarily nested parent-child relationships.
-
-### Decision: Detect hierarchy defects
-
-The original investigation reported a cycle between categories 9001 and 9002 and a missing parent reference for category 9003. Those findings have not been rechecked against a fresh load of the authorized dataset.
-
-The recursive traversal maintains a path of visited category identifiers. It uses that path to prevent endless traversal and flag cycles.
-
-Missing parent relationships are also identified and reported.
-
-### Indexing
-
-An index was added to `products.category_id` for the product-to-category aggregation join. `idx_categories_parent_id` is also created, but the current function walks from a category to its parent by matching `parent.category_id = cw.parent_id`; that lookup uses the category identifier, not the `parent_id` index. The included integrity checks also join on the referenced category ID. No execution plan demonstrates a benefit from `idx_categories_parent_id` for the current scripts. Keep its benefit unclaimed until an actual plan for a child-category lookup shows otherwise; any removal should likewise be based on the target workload and measured write/storage trade-off.
-
-### Alternatives considered
-
-- **Fixed-depth joins:** Not selected because they would not reliably support arbitrary hierarchy depth.
-- **Ignoring cycles:** Not selected because malformed hierarchy data could cause repeated traversal or misleading results.
-- **Silently repairing category relationships:** Not selected because the correct parent relationships cannot be inferred safely from the available data.
-
-### Trade-offs and limitations
-
-Categories affected by the cycle are flagged so their totals can be interpreted carefully.
-
-The six products directly associated with category 9001 can appear in the roll-ups for both cyclic categories. Therefore, totals across those categories must not be added as though they represent independent products.
-
-The original investigation reported 37 products with NULL category identifiers. These products are not included in category-based roll-ups; the count needs fresh-load verification. Their intended category must come from an authoritative source.
-
-The function reports the existing hierarchy defects rather than modifying the original category data.
-
-## 5. Auditable Inventory Movements
-
-**Implementation:** `sql/solutions/04_auditable_inventory_movements.sql`
-
-### Decision: A controlled inventory movement function
-
-The `record_inventory_movement()` function provides a controlled database operation for manual stock adjustments.
-
-It supports the reasons:
-
-- `restock`
-- `return`
-- `correction`
-- `damage`
-- `stock_take`
-
-Sales are excluded because the `place_order()` function already handles sales-related stock deductions and audit entries.
-
-### Decision: Validate movement reasons and quantities
-
-The function checks that the movement reason is allowed and that the quantity sign is appropriate for that reason.
-
-It also checks that the resulting stock quantity does not fall below zero or exceed the integer storage limit.
-
-A product row is locked using `SELECT ... FOR UPDATE` before its stock is changed.
-
-### Transaction handling
-
-The product stock update and inventory-log insertion occur within the same transaction.
-
-This ensures that the inventory balance and its corresponding audit record remain consistent if the operation fails.
-
-### Alternatives considered
-
-- **Allowing direct stock updates:** Not selected because direct updates can bypass validation and audit logging.
-- **Using triggers for every stock change:** Not selected because the lab already has a dedicated order-placement workflow, and a controlled function provides an explicit interface for manual adjustments.
-- **Allowing manual sales movements:** Not selected because this could duplicate or bypass the sales workflow.
-
-### Trade-offs and limitations
-
-The existing inventory log does not contain a physical-count field.
-
-Consequently, a `stock_take` movement with a zero quantity records an audit event but does not replace the stock balance with a newly counted physical quantity.
-
-A separate physical stock-count workflow would be needed to support that behaviour properly.
-
-## 6. Existing Data Integrity and Constraint Decisions
-
-The initial diagnosis identified orphan records, NULL values, inconsistent status representations and malformed category relationships.
-
-Although adding foreign keys and NOT NULL constraints could strengthen the schema, applying them without addressing the existing violations would fail or risk inappropriate data changes.
-
-For this reason, the implementation focuses on safe operations, explicit eligibility rules and reporting of known data-quality issues.
-
-A separate data-cleaning and remediation process should be agreed before introducing stricter schema constraints.
-
-## 7. Overall Engineering Principles
-
-The implementation follows these principles:
-
-1. **Protect existing data:** Avoid destructive changes and do not silently repair records without an established business rule.
-2. **Enforce critical operations in the database:** Use transactions, conditional updates and row-level locking for inventory-sensitive operations.
-3. **Make reporting rules explicit:** Define which records qualify for business metrics.
-4. **Design for changing data structures:** Use recursive queries for hierarchical reporting.
-5. **Preserve auditability:** Record inventory movements alongside stock changes.
-6. **Validate with evidence:** Record concurrency tests, independent aggregate checks, execution plans and transaction rollback tests. The current repository does not contain those run artifacts; see [Validation Evidence](validation_evidence.md).
-
-## 8. Conclusion
-
-The four implementations address the main database engineering requirements while taking the existing data limitations into account.
-
-The solutions prioritise safe inventory operations, transparent reporting, hierarchy defect visibility and traceable stock adjustments.
-
-Further improvements should build on these foundations without compromising the integrity of the existing training data.
+- **Read-then-write order placement** passes a quiet-day demonstration and oversells under exactly the load a flash sale creates.
+- **An exact `status = 'completed'` filter** reports 19.6% of real spend (one sale in five), with no error to warn anyone.
+- **A top-100-only report** gives Adwoa no figure for the other 40,320 customers, so she keeps her spreadsheet.
+- **A fixed three-join category query** silently drops products the day marketing adds a fourth level.
+- **An audit trail written only by the functions** keeps drifting the way the extract already has, because any other update path leaves no record.
+- **An index added "for the report"** taxes every flash-sale order to save 100 ms once a week.

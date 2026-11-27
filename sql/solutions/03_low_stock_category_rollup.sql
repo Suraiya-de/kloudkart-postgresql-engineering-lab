@@ -1,11 +1,26 @@
+-- ============================================================
+-- Kloud Kart: Requirement 3
+-- Low-stock roll-up through the nested category tree
+--
+-- Input:    the course schema and data.
+-- Produces: public.low_stock_by_category(p_threshold integer)
+-- Asserts:  one row per category plus one row for products with
+--           no category; any tree depth is walked; parent cycles
+--           terminate and are flagged; returns in milliseconds
+--           (see docs/validation_evidence.md).
+--
+-- Low stock means stock_quantity <= p_threshold (default 5), so
+-- zero and negative balances are included.
+-- ============================================================
 
 BEGIN;
 
-CREATE INDEX IF NOT EXISTS idx_categories_parent_id
-    ON public.categories (parent_id);
-
-CREATE INDEX IF NOT EXISTS idx_products_category_id
-    ON public.products (category_id);
+-- The first deployed version created these two indexes; this
+-- removes them where present. Measured plans showed neither was
+-- used for a 94-category, 4,023-product roll-up, and each adds
+-- write cost (docs/evidence/rollup_benchmark_2026-11-27.txt).
+DROP INDEX IF EXISTS public.idx_categories_parent_id;
+DROP INDEX IF EXISTS public.idx_products_category_id;
 
 CREATE OR REPLACE FUNCTION public.low_stock_by_category(
     p_threshold integer DEFAULT 5
@@ -23,6 +38,9 @@ RETURNS TABLE (
 LANGUAGE sql
 STABLE
 AS $$
+    -- Walk upwards from every category to each of its ancestors.
+    -- The path array stops the walk the moment an ID repeats, so
+    -- a parent cycle cannot recurse forever.
     WITH RECURSIVE category_walk AS (
         SELECT
             c.category_id AS descendant_id,
@@ -62,8 +80,10 @@ AS $$
         WHERE NOT cw.cycle_detected
     ),
 
+    -- Each (descendant, ancestor) pair once, so no product is
+    -- counted twice under the same ancestor.
     category_ancestors AS (
-        SELECT
+        SELECT DISTINCT
             descendant_id,
             ancestor_id
         FROM category_walk
@@ -83,8 +103,7 @@ AS $$
         SELECT
             ca.ancestor_id,
             COUNT(p.product_id)::bigint AS total_products,
-            COALESCE(SUM(p.stock_quantity), 0)::bigint
-                AS total_stock_units,
+            COALESCE(SUM(p.stock_quantity), 0)::bigint AS total_stock_units,
             COUNT(p.product_id) FILTER (
                 WHERE p.stock_quantity <= p_threshold
             )::bigint AS low_stock_products,
@@ -116,7 +135,28 @@ AS $$
     FROM public.categories c
     LEFT JOIN category_rollup cr
         ON cr.ancestor_id = c.category_id
-    ORDER BY c.category_id;
+
+    UNION ALL
+
+    -- Products with no category would otherwise be invisible.
+    SELECT
+        NULL::integer,
+        '(no category assigned)',
+        COUNT(*)::bigint,
+        COALESCE(SUM(p.stock_quantity), 0)::bigint,
+        COUNT(*) FILTER (WHERE p.stock_quantity <= p_threshold)::bigint,
+        COALESCE(
+            SUM(p.stock_quantity) FILTER (
+                WHERE p.stock_quantity <= p_threshold
+            ),
+            0
+        )::bigint,
+        FALSE,
+        FALSE
+    FROM public.products p
+    WHERE p.category_id IS NULL
+
+    ORDER BY 1 NULLS LAST;
 $$;
 
 COMMIT;

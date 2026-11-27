@@ -1,488 +1,195 @@
 # Kloud Kart Data Diagnosis
 
-## 1. Project Context
+## 1. Scope and method
 
-Kloud Kart Ltd. is an e-commerce business operating in Accra, Ghana. This investigation examines the existing PostgreSQL database supplied for the Kloud Kart engineering lab.
+This diagnosis covers the six tables in the course extract: `categories`, `products`, `customers`, `orders`, `order_items` and `inventory_log`.
 
-The purpose of this diagnosis is to identify existing data-integrity and consistency problems, determine their scale, explain their potential business impact, and recommend appropriate actions.
+Every figure below was produced on 27 November 2026 against a database created empty and loaded with the course `schema.sql` and `load.sql`, before any solution script ran. The queries are in [`sql/diagnostics/integrity_checks.sql`](../../sql/diagnostics/integrity_checks.sql); their output is recorded in [`fresh_load_verification_2026-11-27.txt`](../evidence/fresh_load_verification_2026-11-27.txt).
 
-The investigation was performed against the supplied database before making any data modifications.
-
-The source dataset and schema are not included in this repository and were not available for a fresh database check during the final repository review. Counts and category identifiers described below as prior observations must be rechecked after loading the authorized course dataset before being used for remediation.
-
-## 2. Investigation Approach
-
-The investigation covered six database tables:
-
-- `categories`
-- `products`
-- `customers`
-- `orders`
-- `order_items`
-- `inventory_log`
-
-The following techniques were used:
-
-- Table row-count checks.
-- Sample record inspection.
-- Table structure inspection.
-- `LEFT JOIN` queries to identify missing referenced records.
-- Aggregate queries to quantify affected records.
-- Date-range analysis to understand the period covered by affected records.
-- Grouping and normalisation of order statuses to identify inconsistent representations.
-- Recursive parent traversal with a visited-ID path to detect category cycles safely.
-- Direct checks for negative stock and products without a category assignment.
-
-The read-only integrity checks are included in `sql/diagnostics/integrity_checks.sql`. They investigate potential problems without modifying or cleaning the source data.
-
-### 2.1 Schema Design Observations
-
-The supplied schema defines primary keys for the six tables but does not enforce the relationships between them using foreign-key constraints.
-
-The relationships that should be considered for enforcement include:
-
-- `categories.parent_id` referencing `categories.category_id`.
-- `products.category_id` referencing `categories.category_id`.
-- `orders.customer_id` referencing `customers.customer_id`.
-- `order_items.order_id` referencing `orders.order_id`.
-- `order_items.product_id` referencing `products.product_id`.
-- `inventory_log.product_id` referencing `products.product_id`.
-
-Without these constraints, PostgreSQL does not automatically prevent a record from referencing a non-existent parent record.
-
-This is a structural weakness that permits referential-integrity problems to enter the database. However, the absence of foreign keys alone does not establish the cause of every missing reference found during this investigation.
-
-## 3. Summary of Findings
-
-| Finding | Affected records | Priority |
-|---|---:|---|
-| Order items referencing missing orders | 692 | High |
-| Orders referencing missing customers | 210 | High |
-| Inventory logs referencing missing products | 120 | High |
-| Category referencing missing parent | 1 | Low |
-| Inconsistent order status representations | 15 distinct raw representations | High, conditional reporting risk |
-| Products with negative stock | 14 previously observed | High, operational risk |
-| Categories in a parent cycle | Categories 9001 and 9002 previously observed | Medium, reporting risk |
-| Products with NULL category IDs | 37 previously observed | Medium, category-report coverage risk |
-
-The initial checks also found:
-
-- No products referencing missing categories.
-- No order items referencing missing products.
-- No negative product prices.
-- No order items with quantities less than or equal to zero.
-
-These zero-count results only establish that the specific conditions tested were not found. They do not prove that every aspect of those tables is valid.
-
-The original investigation also observed 577 products with zero stock. Zero stock can be legitimate and is not classified as a data defect here. The counts in this summary are prior observations and require fresh-load verification; the checks below provide repeatable methods for the newly documented stock and hierarchy findings.
-
-## 4. Costing Assumptions and Business Impact
-
-The investigation identified integrity faults that could affect Kloud Kart's reporting, reconciliation and inventory operations. Since actual staff costs and the precise financial consequences of each fault were not provided, the investigation uses explicit estimates to approximate the effort required to investigate the affected records.
-
-These estimates are assumptions for prioritisation, not confirmed company expenses or financial losses.
-
-### 4.1 Costing Assumptions
-
-For the orphan-record findings, I assume:
-
-- Investigating one affected record takes approximately 5 minutes.
-- The estimated staff cost is 30 cost units per hour.
-- For inconsistent statuses, reviewing one distinct raw status representation takes approximately 10 minutes because the review involves confirming its business meaning rather than investigating an individual transaction.
-
-These are illustrative assumptions, not confirmed Kloud Kart payroll figures.
-
-The calculation for orphan records is:
-
-`Investigation cost = (Affected records × 5 / 60) × 30`
-
-For inconsistent statuses:
-
-`Investigation cost = (Distinct raw representations × 10 / 60) × 30`
-
-The estimates measure investigation effort only. They do not include the cost of repairing records, implementing database constraints, lost sales or other operational consequences.
-
-### 4.2 Estimated Investigation Costs
-
-| Integrity fault | Investigation basis | Estimated cost |
-|---|---:|---:|
-| Order items referencing missing orders | 692 records | 1,730 |
-| Orders referencing missing customers | 210 records | 525 |
-| Inventory logs referencing missing products | 120 records | 300 |
-| Inconsistent order status representations | 15 representations | 75 |
-| Category referencing a missing parent | 1 record | 2.50 |
-
-The estimates indicate that investigating the missing-order references requires the greatest effort, followed by missing-customer references and missing-product inventory logs.
-
-The inconsistent statuses have a lower estimated initial review cost because the investigation can begin by examining the 15 distinct raw representations rather than manually reviewing every order.
-
-These figures are estimates of investigation effort. They should not be interpreted as a complete measure of the business impact or the cost of resolving each fault.
-
-The investigation-cost table does not estimate effort for negative-stock, cycle or unassigned-category findings because no review-time assumptions for those investigations were recorded.
-
-### 4.3 Monetary Exposure Requiring Reconciliation
-
-The investigation also identified the following recorded transaction values:
-
-- **826,327.80** in order-item value associated with 692 order items referencing missing orders.
-- **665,180.61** in recorded order value associated with 210 orders referencing missing customers.
-
-The currency associated with these values has not been independently confirmed from the supplied schema or investigation evidence. They are therefore presented without assigning a currency.
-
-These figures represent recorded transaction values associated with affected records. They are not confirmed financial losses.
-
-The missing-order references may affect order reconciliation and product sales reporting. The missing-customer references may affect customer spending calculations, customer rankings and the accuracy of the Monday report.
-
-The actual reporting distortion cannot be established from these values alone. It would require checking which reporting periods and calculations include the affected transactions.
-
-### 4.4 Sensitivity Analysis
-
-To test whether the estimated investigation-cost ranking depends heavily on the assumed investigation time, I reduced the estimated time per orphan record from 5 minutes to 2.5 minutes. For inconsistent statuses, I reduced the review time from 10 minutes to 5 minutes. The assumed hourly rate remains 30 cost units.
-
-| Integrity fault | Original estimate | Estimate with half the time |
-|---|---:|---:|
-| Order items referencing missing orders | 1,730 | 865 |
-| Orders referencing missing customers | 525 | 262.50 |
-| Inventory logs referencing missing products | 300 | 150 |
-| Inconsistent order status representations | 75 | 37.50 |
-| Category referencing a missing parent | 2.50 | 1.25 |
-
-The ranking remains unchanged when the assumed investigation time is halved. This indicates that the investigation-effort ranking is stable under this sensitivity check.
-
-However, this ranking measures estimated investigation effort, not total business damage. The monetary exposure and operational consequences must also be considered when prioritising remediation.
-
-### 4.5 Limitations of the Estimates
-
-These estimates are preliminary because actual investigation times, staff costs and business losses were not supplied.
-
-Further investigation is needed to establish:
-
-- Whether the affected transactions appear in Nana's Monday customer-spending report.
-- Whether missing product references affect stock reconciliation or sales reporting.
-- Whether inconsistent order statuses cause records to be excluded from reports.
-- Whether the missing category parent affects the low-stock category roll-up.
-- The actual staff time and financial cost of repairing the identified problems.
-
-The estimates should guide prioritisation and further investigation, rather than be presented as audited financial losses.
-
-## 5. Detailed Findings
-
-### 5.1 Order Items Referencing Missing Orders
-
-**Priority: High**
-
-**1. What is wrong**
-
-The investigation identified 692 order-item records referencing 689 distinct order IDs that do not exist in the `orders` table.
-
-| Measurement | Result |
+| Table | Rows |
 |---|---:|
-| Affected order items | 692 |
-| Distinct missing order IDs | 689 |
-| Total item quantity | 968 |
-| Estimated item value | 826,327.80 |
-| Lowest unit price | 5.27 |
-| Highest unit price | 20,657.77 |
+| categories | 94 |
+| products | 4,023 |
+| customers | 40,420 |
+| orders | 159,384 |
+| order_items | 336,559 |
+| inventory_log | 282,352 |
 
-The currency associated with this recorded monetary value has not been independently confirmed from the supplied schema or investigation evidence.
+The extract runs from 2 August 2025 to 31 August 2026. Twenty-four orders are dated later; 15 of them are still in the future on the date of this diagnosis, 27 November 2026 (section 3.8). Money values are as recorded; the extract does not state a currency.
 
-**2. How it was found**
+### What the schema permits
 
-A `LEFT JOIN` was performed between `order_items` and `orders`. Records with a non-null `order_id` and no matching order were counted.
+Reading `schema.sql` before the data shows what can go wrong. There are primary keys and nothing else: no foreign keys, no `NOT NULL`, no `CHECK` constraints, no unique email, and `status` and `reason` are free text. Every relationship, every quantity and every status is enforced only by whichever application wrote it. Each finding below is something this schema allowed.
 
-The estimated item value was calculated using:
+### How each finding is costed
 
-`SUM(quantity * unit_price)`
+Each fault is costed against a figure Nana or Adwoa actually uses: the Monday report's total spend and top-100 list, units of stock, and the value of sales that cannot be traced. The report figures are measured as of 31 August 2026, the end of the extract, and include only completed orders from known customers (total spend 339,176,836.88 across 111,190 orders).
 
-**3. What it costs**
+## 2. Ranking by danger
 
-The estimated investigation cost is:
+Danger means how badly the fault misleads a decision or harms a customer if left alone, not how many rows it touches.
 
-`(692 × 5 / 60) × 30 = 1,730 cost units`
-
-The affected order items have a combined recorded value of 826,327.80 that cannot currently be reconciled through matching order records.
-
-This can affect order-history reporting, sales analysis, reconciliation and investigations into customer purchases. The recorded item value is not necessarily lost revenue.
-
-**4. What should be done**
-
-Investigate the missing order IDs using authorised source records or transaction history. Recover valid records or references where possible. Introduce a foreign key after existing violations have been resolved.
-
-The repair should be reviewed carefully because recreating or linking an order incorrectly could result in duplicate or misleading transaction records.
-
-### 5.2 Orders Referencing Missing Customers
-
-**Priority: High**
-
-**1. What is wrong**
-
-The investigation identified 210 orders referencing 190 distinct customer IDs that do not exist in the `customers` table.
-
-| Measurement | Result |
-|---|---:|
-| Affected orders | 210 |
-| Distinct missing customer IDs | 190 |
-| Total recorded order value | 665,180.61 |
-| Average order value | 3,167.53 |
-| Smallest order value | 6.77 |
-| Largest order value | 67,719.76 |
-| Earliest affected order | 2025-09-02 11:04:52 |
-| Latest affected order | 2026-08-31 12:36:13 |
-
-The currency associated with these recorded monetary values has not been independently confirmed from the supplied schema or investigation evidence.
-
-**2. How it was found**
-
-A `LEFT JOIN` was performed between `orders` and `customers`. Orders with a non-null `customer_id` and no matching customer were counted.
-
-**3. What it costs**
-
-The estimated investigation cost is:
-
-`(210 × 5 / 60) × 30 = 525 cost units`
-
-The affected orders have a combined recorded value of 665,180.61 that cannot reliably be attributed to existing customer records.
-
-This may affect Nana's Monday customer-spending report, customer purchase histories, customer rankings, customer segmentation and marketing analysis.
-
-The affected orders include completed, pending, shipped, cancelled and refunded status representations. Therefore, the issue is not limited to one order status.
-
-The combined order value is not confirmed financial loss.
-
-**4. What should be done**
-
-Investigate whether the missing customers were deleted, omitted during data loading or created through another business process. Recover valid customer records or references where possible. Introduce a foreign key after reconciliation.
-
-Customer records should not be merged or recreated based only on assumptions because doing so could incorrectly attribute purchases to the wrong customer.
-
-### 5.3 Inventory Logs Referencing Missing Products
-
-**Priority: High**
-
-**1. What is wrong**
-
-The investigation identified 120 inventory log records referencing 111 distinct product IDs that do not exist in the `products` table.
-
-| Measurement | Result |
-|---|---:|
-| Affected inventory logs | 120 |
-| Distinct missing product IDs | 111 |
-| Total quantity change | -120 |
-| Recorded reason | sale |
-| Earliest affected log | 2025-08-05 21:26:34 |
-| Latest affected log | 2026-08-31 22:47:23 |
-
-**2. How it was found**
-
-A `LEFT JOIN` was performed between `inventory_log` and `products`. Records with a non-null `product_id` and no matching product were counted.
-
-**3. What it costs**
-
-The estimated investigation cost is:
-
-`(120 × 5 / 60) × 30 = 300 cost units`
-
-The 120 affected stock movements cannot be linked to valid product records. This weakens inventory auditing, stock reconciliation and product-level sales analysis.
-
-All 120 affected records have the reason `sale` and a combined quantity change of -120.
-
-The negative quantity change represents an outward stock movement and is not itself an integrity fault. The problem is that the affected movements reference products that cannot be found.
-
-The monetary value of the affected stock movements cannot be established from the available product records because the referenced products are missing.
-
-**4. What should be done**
-
-Investigate the missing product references using historical product records and sales transactions. Restore valid references where possible and enforce a foreign key between `inventory_log.product_id` and `products.product_id`.
-
-Care must be taken not to create duplicate products or assign stock movements to incorrect product records.
-
-### 5.4 Category Referencing a Missing Parent
-
-**Priority: Low**
-
-**1. What is wrong**
-
-One category was found referencing a parent category that does not exist.
-
-| Field | Value |
-|---|---|
-| Category ID | 9003 |
-| Category name | Clearance |
-| Missing parent ID | 8999 |
-| Direct products | 0 |
-| Child categories | 0 |
-
-**2. How it was found**
-
-A self-join was performed on the `categories` table to identify non-null parent IDs without matching category records.
-
-**3. What it costs**
-
-The estimated investigation cost is:
-
-`(1 × 5 / 60) × 30 = 2.50 cost units`
-
-The immediate measurable impact appears limited because the category currently has no direct products or child categories.
-
-However, a broken parent relationship can affect category hierarchy traversal and low-stock reporting. Its future impact could increase if products or subcategories are added beneath it.
-
-**4. What should be done**
-
-Verify whether parent category 8999 was deleted or omitted during data loading. Restore the correct parent relationship or agree on an appropriate alternative.
-
-The parent should not be assigned arbitrarily because an incorrect relationship could place the category under the wrong part of the hierarchy.
-
-### 5.5 Inconsistent Order Statuses
-
-**Priority: High, conditional reporting risk**
-
-**1. What is wrong**
-
-The `orders.status` column contains 15 distinct raw representations across seven normalised groups. These include inconsistent capitalisation, leading or trailing spaces, and alternative spellings. There are also potentially different business meanings, such as `complete` versus `completed`.
-
-**2. How it was found**
-
-The issue was identified by grouping statuses using `LOWER(TRIM(status))` and comparing exact-match counts with normalised counts.
-
-The comparison showed:
-
-| Status | Exact match | Normalised total |
-|---|---:|---:|
-| completed | 22,091 | 89,066 |
-| cancelled | 3,238 | 9,488 |
-| pending | 7,928 | 16,009 |
-
-For example, an exact `status = 'completed'` filter matches 22,091 records, while normalisation matches 89,066. This is a difference of 66,975 orders within the `completed` group.
-
-The separate `complete` group contains another 22,285 orders. It has not been combined with `completed` because their business meanings have not been confirmed.
-
-**3. What it costs**
-
-The estimated initial investigation cost is:
-
-`(15 × 10 / 60) × 30 = 75 cost units`
-
-If reports use exact status comparisons, they may exclude valid orders because of formatting differences. In the `completed` group, 66,975 records are not matched by the exact lowercase value. This creates a potential reporting accuracy and reconciliation risk.
-
-The actual financial impact cannot yet be established because Nana's report definitions and status-filtering rules have not been confirmed. The terms `complete` and `completed`, and `canceled` and `cancelled`, also require business clarification before they are treated as equivalent.
-
-The estimate covers the initial review of the 15 raw representations. It does not include reviewing every affected order or correcting the underlying data.
-
-**4. What should be done**
-
-Introduce a controlled set of permitted status values and standardise incoming values. Confirm the business meaning of each status with Nana before merging aliases. Update reporting queries to use the approved definitions and validate the results against the original records.
-
-Until that business clarification is available, the implemented customer spending report uses only `LOWER(TRIM(status)) = 'completed'`. The separate `complete` group remains unconfirmed and is excluded.
-
-### 5.6 Products with Negative Stock
-
-**Priority: High, operational risk**
-
-**1. What is wrong**
-
-The original investigation reported 14 products with `stock_quantity < 0`. The product identifiers and individual negative quantities were not retained in the repository, so they require fresh-load verification.
-
-**2. How it was found**
-
-The reproducible check is `negative_stock` in `sql/diagnostics/integrity_checks.sql`; it counts products where `stock_quantity < 0` without changing source data.
-
-**3. Business impact and risk**
-
-Negative balances can make stock visibility unreliable and may conceal discrepancies between recorded and physical inventory. The actual products, quantities and operational consequences have not been rechecked. The original investigation also reported 577 products at zero stock; zero stock may be legitimate and is not treated as a data defect by this diagnosis.
-
-**4. What should be done**
-
-Verify the current affected products against authorized stock records before correcting balances. Do not infer adjustments from the count alone.
-
-### 5.7 Category Parent Cycle
-
-**Priority: Medium, reporting risk**
-
-**1. What is wrong**
-
-The original investigation identified a parent cycle between categories 9001 and 9002. These are the two previously observed cycle members; the current database was not available to confirm that the cycle remains present.
-
-**2. How it was found**
-
-The `categories_in_parent_cycles` check in `sql/diagnostics/integrity_checks.sql` recursively follows each category's parent, tracks visited IDs in an array, and stops recursing after a repeated ID is detected. The check counts distinct category IDs in detected cycles.
-
-**3. Business impact and risk**
-
-A cycle makes category ancestry ambiguous. The recursive low-stock function detects and flags affected roll-ups; the previous technical review recorded that six products directly assigned to category 9001 can appear in both cycle-category totals. Do not add those category totals as if they represented separate products.
-
-**4. What should be done**
-
-Confirm the intended parent relationship from authoritative category records, then agree a repair before changing either parent ID. Re-run the cycle check after any approved repair.
-
-### 5.8 Products Without a Category Assignment
-
-**Priority: Medium, category-report coverage risk**
-
-**1. What is wrong**
-
-The original investigation reported 37 products whose `category_id` is NULL. Their product IDs and stock values were not retained here and need fresh-load verification.
-
-**2. How it was found**
-
-The `products_without_category` check counts rows where `products.category_id IS NULL`. This is separate from the existing `orphan_products` check, which detects non-NULL category IDs with no matching category.
-
-**3. Business impact and risk**
-
-Products without a category are omitted from `low_stock_by_category()` because the roll-up starts from category rows and joins products by category ID. They therefore do not contribute to category-level product or stock totals. This is a reporting-coverage issue; the correct category cannot be inferred from NULL alone.
-
-**4. What should be done**
-
-Use authoritative product records to determine whether each product should be assigned to a category. Do not assign categories by guesswork. Re-run the check and category report after approved updates.
-
-## 6. Danger Ranking
-
-The following is a provisional risk ranking based on the available evidence, potential business consequences and estimated investigation effort. It is not a ranking of confirmed financial losses. The actual impact of some findings depends on how Kloud Kart's reports and operational processes use the affected records.
-
-| Rank | Finding | Priority | Reason |
+| Rank | Finding | Size | What it costs Nana if uncorrected |
 |---:|---|---|---|
-| 1 | Order items referencing missing orders | High | 692 affected records and 826,327.80 in associated item value cannot be reconciled through their orders. |
-| 2 | Orders referencing missing customers | High | 210 orders with a combined recorded value of 665,180.61 cannot reliably be attributed to customers, potentially affecting the Monday report. |
-| 3 | Products with negative stock | High, conditional | 14 products were previously observed below zero; current balances and consequences require fresh-load verification. |
-| 4 | Inconsistent order statuses | High, conditional | Up to 66,975 records in the `completed` group are not matched by an exact lowercase `completed` filter. The actual report-filtering impact remains unconfirmed. |
-| 5 | Inventory logs referencing missing products | High | 120 stock movement records cannot be traced to valid products, weakening inventory auditing and reconciliation. |
-| 6 | Category parent cycle | Medium | Categories 9001 and 9002 were previously observed in a cycle that can make roll-up totals overlap; the report flags affected categories. |
-| 7 | Products without a category assignment | Medium | 37 products were previously observed outside category roll-ups, reducing category-report coverage. |
-| 8 | Missing category parent | Low | Breaks a hierarchy relationship, although no direct products or child categories were previously observed beneath category 9003. |
+| 1 | Stock does not match the movement ledger | 144 products, 2,553 units | Stock counts cannot be trusted; 49 of these products are at low stock, where a wrong count turns directly into overselling. |
+| 2 | "complete" treated as a different status from "completed" | 22,285 orders, 68.09M (68.00M within the report) | A report that misses it understates customer spend by 20% and gets 24 of the top 100 customers wrong. |
+| 3 | Order totals disagree with their order lines | 2,426 orders, 5.29M absolute difference | Revenue depends on which column is summed: 1.27M difference inside the Monday report's scope alone. |
+| 4 | Negative stock | 14 products, 27 units | Units were sold that did not exist: the overselling Nana described, already in the data. |
+| 5 | Orders whose customer does not exist | 210 orders, 665,180.61 | 144 completed orders worth 388,780.89 are missing from every customer's total. |
+| 6 | Order lines whose order does not exist | 692 lines, 826,327.80 | Product sales include lines that belong to no order and no customer. |
+| 7 | Duplicate order lines and keying errors | 578 extra lines (941,247.62); 6 lines with 999 or 9999 units | Units sold and line revenue are overstated; 23,988 phantom units in six lines. |
+| 8 | Orders dated in the future | 15 orders, 12 completed worth 35,600.61 | They enter the report silently on their date; the first on 4 December 2026. |
+| 9 | Duplicate customer records | 533 email addresses on 1,068 records, 8.82M spend split | Spend is split across several records; on this data it changes only one top-100 place. |
+| 10 | Stock movements for products that do not exist | 120 movements, 111 products | 120 units left stock with no traceable product, a gap in the audit trail. |
+| 11 | Products with no category | 37 products, 3,112 units | Invisible in any category roll-up, including 12 low-stock products. |
+| 12 | Category tree defects | 1 cycle (2 categories, 6 products); 1 missing parent (0 products) | Ambiguous totals for the six products under the cycle; no current effect from the missing parent. |
 
-The first two findings have the largest recorded monetary exposure and may affect important business reporting. Negative stock can affect operational decisions, while the status issue carries conditional reporting risk. The inventory-log issue weakens the audit trail for stock movements. Risks for the cycle and unassigned products concern category reporting rather than confirmed financial loss.
+The first four threaten the two things Nana asked about: whether stock can be trusted, and whether the Monday report is right. Findings 5 to 8 distort specific numbers by amounts that can be stated. Findings 9 to 12 are real but small on this data.
 
-The ranking should be reviewed when the actual report definitions, business status rules and reconciliation results are confirmed.
+## 3. Findings
 
-The investigation-cost ranking remains unchanged when the assumed investigation time is halved. However, investigation effort alone does not determine the business danger of a fault.
+### 3.1 Stock does not match the movement ledger (rank 1)
 
-## 7. Overall Recommendations
+**What is wrong.** For 3,879 of 4,023 products, `stock_quantity` equals the sum of that product's `inventory_log` movements exactly. For the other 144 it does not:
 
-1. Investigate and reconcile orphan records using authorised historical records before deleting or changing any data.
-2. Review the database relationships and introduce appropriate foreign-key constraints after resolving existing violations. Validate existing data before enforcing the constraints.
-3. Establish an approved order-status vocabulary. Confirm the business meaning of similar values before standardising existing records, then enforce valid values using an appropriate database constraint or reference table.
-4. Investigate the previously observed negative stock and reconcile balances against authoritative records before making adjustments.
-5. Review the category cycle, missing parent and unassigned products; confirm intended relationships before changing them.
-6. Add validation to data-loading processes so missing references and invalid values are detected before entering operational tables.
-7. Establish recurring data-quality checks to identify new integrity problems and monitor the quality of operational data. Treat zero stock as an availability signal unless business policy says otherwise.
+| Direction | Products | Net units | Gap per product |
+|---|---:|---:|---|
+| Stock below ledger (units left without a record) | 122 | -2,464 | 3 to 56 |
+| Stock above ledger (units arrived without a record) | 22 | +89 | 3 to 6 |
 
-## 8. Investigation Limitations
+**How it was found.** Each product's stock was compared with `SUM(change_qty)` from its movements (`stock_ledger_mismatch`, output 3).
 
-- The investigation used the supplied training dataset and schema.
-- The business meaning of every unusual value has not yet been confirmed.
-- The currency associated with the recorded monetary values has not been independently confirmed.
-- Recorded order and item values are not proof of lost revenue.
-- The cause of each missing reference has not yet been established.
-- Investigation costs are based on stated assumptions, not actual company payroll or measured investigation times.
-- The actual effect of the identified faults on Nana's reports has not yet been fully measured.
-- No original records were deleted or modified as part of this diagnosis.
-- The diagnosis does not yet include the implementation of corrective SQL solutions.
+**Why it matters.** Because 96% of products reconcile to the unit, the ledger is evidently how stock is meant to be kept; the 144 exceptions are stock changed without a record. That is exactly Nana's complaint that "stock counts no longer match reality", and it is the gap a trail is meant to close. Valued at current prices the unexplained units are worth 3,865,699.34. Forty-nine of the products are at five units or fewer; seven show sellable stock although their ledger says none is left.
 
-## 9. Conclusion
+**What to do.** Count the 144 products physically, record the result through `record_inventory_movement()` with reason `correction`, and use the new audit trigger (solution 04) so a stock change can no longer happen without a ledger row. Do not overwrite the balances from the ledger: either side could be the wrong one.
 
-The investigation identified significant referential-integrity problems involving orders, customers, products and categories. It also found inconsistent order-status representations.
+### 3.2 "complete" is a spelling of "completed" (rank 2)
 
-These problems can affect reporting accuracy, reconciliation, customer analysis, inventory auditing and category-based reporting.
+**What is wrong.** `orders.status` holds 15 spellings of seven values. Most are case or space variants (`'completed'`, `'Completed'`, `'COMPLETED'`, `' completed'`), which `LOWER(BTRIM(status))` resolves. Two are different words: `complete` and `canceled`.
 
-The investigation quantified the affected records, identified associated transaction values, and estimated the effort required to investigate the problems using explicit assumptions. The estimates provide a starting point for prioritisation but should not be interpreted as confirmed financial losses.
+| Normalised status | Spellings | Orders | Average value | First and last order |
+|---|---:|---:|---:|---|
+| completed | 4 | 89,066 | 3,048.56 | 2 Aug 2025 to 20 Aug 2027 |
+| complete | 1 | 22,285 | 3,055.27 | 2 Aug 2025 to 11 May 2027 |
 
-The findings provide a baseline for the subsequent database engineering work. Any corrective changes should be supported by verified business rules, documented assumptions and repeatable tests.
+**Decision.** `complete` is treated as completed. Each of the four spellings of `completed` holds 22,091 to 22,395 orders; `complete` holds 22,285, with the same average value and the same first order date. It behaves as a fifth spelling, not a separate stage. `canceled` is likewise read as `cancelled`; it affects no report.
+
+**Why it matters.** Excluding `complete` drops the Monday report from 339.18M to 271.18M (20.0%) and replaces 24 of the top 100 customers. An exact `status = 'completed'` filter is worse still: it finds 22,044 of 111,190 sales (19.8%), worth 19.6% of the true spend.
+
+**Cost if this decision is wrong.** If `complete` turns out to mean something else (for example, "delivered but not paid"), the report overstates spend by 68.00M as of 31 August 2026. That is why it is listed in the memo as an assumption to confirm, and why a single line in solution 02 controls it.
+
+**What to do.** Agree one vocabulary of statuses, convert existing rows, and add a check constraint so new spellings cannot be written.
+
+### 3.3 Order totals disagree with their order lines (rank 3)
+
+**What is wrong.** For 2,426 orders, `total_amount` differs from `SUM(quantity * unit_price)` of the order's lines:
+
+| Direction | Orders | Net difference |
+|---|---:|---:|
+| Total below lines | 1,341 | -3,215,549.76 |
+| Total above lines | 938 | +545,448.22 |
+| A line has no unit price | 147 | -730,592.36 |
+
+**How it was found.** Output 4 of `integrity_checks.sql` (`order_total_mismatch`).
+
+**Which side is right.** Often the total. In 526 of the orders, the total matches the lines once a duplicated line is removed, and the six keying-error orders have totals consistent with one unit rather than 999 or 9999 (both in 3.7). In those cases the total is right and the lines are wrong. The rest cannot be settled from the data: a lower total could be a discount, a higher one a delivery charge.
+
+**Decision.** The Monday report uses `total_amount`, the amount charged at checkout, which the schema says the application writes. This also keeps duplicate lines and keying errors out of customer spend. Product-level analysis that sums lines would inherit the errors in 3.6 and 3.7.
+
+**Why it matters.** Within the report's scope, 1,717 completed orders disagree; summing lines instead of totals would change the report by 1.27M. Two analysts using different columns would publish different revenue for the same week.
+
+### 3.4 Negative stock: overselling already happened (rank 4)
+
+**What is wrong.** Fourteen products have stock below zero, 27 units in total, worth 20,627.76 at current prices.
+
+**How it was found.** `negative_stock`. For 13 of the 14, the negative figure equals the ledger sum, so these are recorded sales of units that did not exist. They are the overselling Nana described, not a typing error. The fourteenth (product 6295) shows -1 against a ledger of +3 and is also in 3.1.
+
+**What to do.** Do not reset them to zero; the negative balance is the evidence of what was oversold. Reconcile each against a physical count and record the correction through `record_inventory_movement()`. The new constraint in solution 01 prevents any further negative balance from being written.
+
+### 3.5 Orders whose customer does not exist (rank 5)
+
+**What is wrong.** 210 orders worth 665,180.61 reference 190 customer IDs that are not in `customers`. They span 2 September 2025 to 31 August 2026 and every status.
+
+**Why it matters.** 144 of them are completed sales worth 388,780.89. They cannot be attributed to anyone, so they are excluded from the Monday report. That is the right call for a per-customer report, but the business's total sales are 388,780.89 higher than the sum of customer totals.
+
+**What to do.** Find the missing customer records from the source system before adding a foreign key. Do not reassign the orders by guesswork.
+
+### 3.6 Order lines whose order does not exist (rank 6)
+
+**What is wrong.** 692 order lines worth 826,327.80 reference 689 order IDs not in `orders`. Nobody can say who bought them, when, or whether they were paid for.
+
+**Why it matters.** Any product-sales or units-sold figure built from `order_items` includes them. The Monday report, which works from order totals, does not.
+
+**What to do.** Recover the parent orders if they exist upstream; otherwise quarantine the lines from product reporting. Add a foreign key once resolved.
+
+### 3.7 Duplicate order lines and keying errors (rank 7)
+
+**What is wrong.**
+
+- 578 extra order lines repeat an existing line exactly (same order, product, quantity and price), in 577 groups worth 941,247.62.
+- Six lines have a quantity of 999 or 9999, against a normal range of 1 to 10. In three of the six orders the total matches exactly when the quantity is read as one (for example, quantity 999 at 20.13 on an order totalling 20.13); in all six the total is a small fraction of what the stated quantity would cost. The six lines state 23,994 units; read as one unit each, 23,988 of them were never sold. No stock movement of that size exists, so stock was not affected.
+
+**Why it matters.** Units sold and line revenue are overstated wherever lines are summed. Customer spend is unaffected because it uses order totals.
+
+**What to do.** Delete the duplicate lines and correct the six quantities to 1 after confirming against the source orders; add a sensible upper bound on quantity at checkout.
+
+### 3.8 Orders dated in the future (rank 8)
+
+**What is wrong.** 15 orders are dated between 4 December 2026 and 20 August 2027; their stock movements carry the same future timestamps. Twelve are completed, worth 35,600.61. The times are all on the whole minute, unlike the rest of the data, which suggests a manual entry or clock error. The schema's own comment on `order_date` ("No time zone. Nobody remembers why.") makes a time-zone or entry error likely.
+
+**Why it matters.** The report excludes orders after its report date, so they cause no harm today. But each will enter the report silently on its date, the first on 4 December 2026, inflating a week nobody sold in.
+
+**What to do.** Correct them from the source system; the monitoring view flags them until then.
+
+### 3.9 Duplicate customer records (rank 9)
+
+**What is wrong.** 533 email addresses are shared by more than one record: 531 by two records and 2 by three (1,068 records). In every case the records have the same name, differing only in capitalisation; the phone number always differs and the city differs in 206 cases. These look like the same person registered more than once, not a shared family address.
+
+**Why it matters.** Their completed spend, 8.82M, is split across several IDs, so each part ranks lower than the customer really does. On this data the effect on the top 100 is small: merging would bring one customer into it.
+
+**What to do.** Merge only after confirming identity (the schema says email "never was" unique, so it is not proof on its own).
+
+### 3.10 Stock movements for products that do not exist (rank 10)
+
+120 inventory movements, all sales of one unit, reference 111 product IDs that are not in `products`. Those units left stock with no product an auditor can trace. Recover the product records if they existed; otherwise mark the movements as unattributable.
+
+### 3.11 Products with no category (rank 11)
+
+37 products holding 3,112 units have no category. Twelve of them are at low stock. Any roll-up that starts from the category tree misses them, so solution 03 reports them on a separate "no category assigned" line. Assign categories from the product catalogue.
+
+### 3.12 Category tree defects (rank 12)
+
+- Categories 9001 (Seasonal Promotions) and 9002 (Promotions) are each other's parent. Their six products appear in both categories' totals; the roll-up flags both and its recursion stops on the repeat.
+- Category 9003 (Clearance) points to parent 8999, which does not exist. It has no products or children today.
+
+Marketing adds subcategories often, so both should be fixed at source and guarded by a foreign key.
+
+## 4. Looks wrong, but is not
+
+These were investigated and deliberately left alone.
+
+| Observation | Why it is not a fault |
+|---|---|
+| 577 products at zero stock | Sold out. An availability signal, reported as `INFO` by the monitoring view. |
+| Sales stored as negative `change_qty` | The schema's documented convention for stock leaving. |
+| 4,116 order lines priced differently from today's price | `unit_price` is the price at the time of sale; prices change. |
+| 768 customers with no orders | Registered, never bought. They appear in the report with zero spend. |
+| Customers in Lagos and Abuja | Plausibly cross-border customers; nothing in the brief restricts delivery to Ghana. |
+| 406 product names used more than once | Different product IDs, prices and stock; likely variants. |
+| City spellings such as `accra`, `ACCRA`, `Accra` | Cosmetic. They matter only for a city report, which nobody has asked for. |
+
+## 5. What could not be resolved
+
+- **Which side is right in 3.1 and 3.3.** The data shows the disagreement; only a physical count or the payment records can settle it.
+- **The ledger records fewer sale units than the order lines.** The ledger holds 412,645 units of sales; order lines hold 554,451 (500,656 excluding cancelled orders). Because 3,879 products reconcile exactly to the ledger, the ledger is treated as the stock record. Why some order lines never produced a stock movement (perhaps orders cancelled before dispatch) is not explained by the extract.
+- **The meaning of `complete`.** Section 3.2 gives the evidence for the decision; only Nana's team can confirm it.
+- **The currency.** Not stated anywhere in the extract.
+
+## 6. Recommendations, in order
+
+1. Count and correct the 144 products in 3.1 and the 14 in 3.4 through `record_inventory_movement()`, so every correction is itself on the trail.
+2. Confirm that `complete` means completed, then standardise the status values and add a check constraint.
+3. Decide with finance which figure is revenue, the order total or the sum of lines, and correct the 526 orders whose duplicate lines explain the gap.
+4. Recover or quarantine the orphaned orders, lines and movements (3.5, 3.6, 3.10), then add foreign keys.
+5. Correct the future dates, the keying errors and the category tree.
+6. Run `SELECT * FROM data_quality_monitoring ORDER BY severity_rank, violation_count DESC;` each Monday before the report, so new problems are seen when they arrive rather than months later.

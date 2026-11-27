@@ -1,0 +1,542 @@
+Kloud Kart - Low-stock category roll-up
+=======================================
+
+Date: 2026-11-27
+Environment: Windows 11 laptop, Docker Desktop; PostgreSQL 18.7 container (8 vCPU, 16 GB visible),
+shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC.
+Database: kloudkart_audit (a scratch database), created empty and loaded with the course schema.sql and load.sql
+(categories 94, products 4,023, customers 40,420, orders 159,384, order_items 336,559, inventory_log 282,352).
+
+First plan: previous function with idx_categories_parent_id and
+idx_products_category_id present. Neither index appears in the plan.
+Then: new function (indexes dropped), 5 runs, sample output and
+reconciliation checks.
+
+Summary: 3.7 - 6.0 ms per call; Electronics matches an independent
+top-down count (1,238 products); roots + uncategorised + cycle members
+= 4,023 products.
+
+Raw output
+----------
+Pager usage is off.
+==== Plan with idx_categories_parent_id and idx_products_category_id present (previous version)
+                                                       QUERY PLAN                                                       
+------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=94.00 loops=1)
+   Sort Key: c.category_id
+   Sort Method: quicksort  Memory: 31kB
+   Buffers: shared hit=48
+   CTE category_walk
+     ->  Recursive Union (actual rows=262.00 loops=1)
+           Storage: Memory  Maximum Storage: 44kB
+           Buffers: shared hit=4
+           ->  Seq Scan on categories c_1 (actual rows=94.00 loops=1)
+                 Buffers: shared hit=2
+                 SubPlan 2
+                   ->  Seq Scan on categories p_1 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+           ->  Hash Join (actual rows=42.00 loops=4)
+                 Hash Cond: (cw.parent_id = parent.category_id)
+                 Buffers: shared hit=2
+                 ->  WorkTable Scan on category_walk cw (actual rows=65.00 loops=4)
+                       Filter: (NOT cycle_detected)
+                       Rows Removed by Filter: 0
+                 ->  Hash (actual rows=94.00 loops=1)
+                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                       Buffers: shared hit=1
+                       ->  Seq Scan on categories parent (actual rows=94.00 loops=1)
+                             Buffers: shared hit=1
+                 SubPlan 4
+                   ->  Seq Scan on categories p_2 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+   ->  Hash Right Join (actual rows=94.00 loops=1)
+         Hash Cond: (category_walk.ancestor_id = c.category_id)
+         Buffers: shared hit=45
+         ->  HashAggregate (actual rows=94.00 loops=1)
+               Group Key: category_walk.ancestor_id
+               Batches: 1  Memory Usage: 40kB
+               Buffers: shared hit=44
+               ->  Hash Left Join (actual rows=12919.00 loops=1)
+                     Hash Cond: (category_walk.descendant_id = p.category_id)
+                     Buffers: shared hit=44
+                     ->  Hash Join (actual rows=260.00 loops=1)
+                           Hash Cond: (category_walk.descendant_id = cq.descendant_id)
+                           Buffers: shared hit=4
+                           ->  CTE Scan on category_walk (actual rows=260.00 loops=1)
+                                 Filter: (NOT cycle_detected)
+                                 Rows Removed by Filter: 2
+                                 Storage: Memory  Maximum Storage: 34kB
+                                 Buffers: shared hit=1
+                           ->  Hash (actual rows=94.00 loops=1)
+                                 Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                                 Buffers: shared hit=3
+                                 ->  Subquery Scan on cq (actual rows=94.00 loops=1)
+                                       Buffers: shared hit=3
+                                       ->  HashAggregate (actual rows=94.00 loops=1)
+                                             Group Key: category_walk_1.descendant_id
+                                             Batches: 1  Memory Usage: 32kB
+                                             Buffers: shared hit=3
+                                             ->  CTE Scan on category_walk category_walk_1 (actual rows=262.00 loops=1)
+                                                   Storage: Memory  Maximum Storage: 34kB
+                                                   Buffers: shared hit=3
+                     ->  Hash (actual rows=3986.00 loops=1)
+                           Buckets: 4096  Batches: 1  Memory Usage: 204kB
+                           Buffers: shared hit=40
+                           ->  Seq Scan on products p (actual rows=4023.00 loops=1)
+                                 Buffers: shared hit=40
+         ->  Hash (actual rows=94.00 loops=1)
+               Buckets: 1024  Batches: 1  Memory Usage: 13kB
+               Buffers: shared hit=1
+               ->  Seq Scan on categories c (actual rows=94.00 loops=1)
+                     Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=379 read=1
+ Planning Time: 2.911 ms
+ Execution Time: 4.729 ms
+(71 rows)
+
+BEGIN
+DROP INDEX
+DROP INDEX
+CREATE FUNCTION
+COMMIT
+==== New version (indexes removed): 5 runs
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=95.00 loops=1)
+   Sort Key: c.category_id
+   Sort Method: quicksort  Memory: 31kB
+   Buffers: shared hit=85
+   CTE category_walk
+     ->  Recursive Union (actual rows=262.00 loops=1)
+           Storage: Memory  Maximum Storage: 44kB
+           Buffers: shared hit=4
+           ->  Seq Scan on categories c_1 (actual rows=94.00 loops=1)
+                 Buffers: shared hit=2
+                 SubPlan 2
+                   ->  Seq Scan on categories p_2 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+           ->  Hash Join (actual rows=42.00 loops=4)
+                 Hash Cond: (cw.parent_id = parent.category_id)
+                 Buffers: shared hit=2
+                 ->  WorkTable Scan on category_walk cw (actual rows=65.00 loops=4)
+                       Filter: (NOT cycle_detected)
+                       Rows Removed by Filter: 0
+                 ->  Hash (actual rows=94.00 loops=1)
+                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                       Buffers: shared hit=1
+                       ->  Seq Scan on categories parent (actual rows=94.00 loops=1)
+                             Buffers: shared hit=1
+                 SubPlan 4
+                   ->  Seq Scan on categories p_3 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+   ->  Append (actual rows=95.00 loops=1)
+         Buffers: shared hit=85
+         ->  Hash Right Join (actual rows=94.00 loops=1)
+               Hash Cond: (category_walk.ancestor_id = c.category_id)
+               Buffers: shared hit=45
+               ->  HashAggregate (actual rows=94.00 loops=1)
+                     Group Key: category_walk.ancestor_id
+                     Batches: 1  Memory Usage: 40kB
+                     Buffers: shared hit=44
+                     ->  Hash Left Join (actual rows=12919.00 loops=1)
+                           Hash Cond: (category_walk.descendant_id = p.category_id)
+                           Buffers: shared hit=44
+                           ->  Hash Join (actual rows=260.00 loops=1)
+                                 Hash Cond: (category_walk.descendant_id = cq.descendant_id)
+                                 Buffers: shared hit=4
+                                 ->  HashAggregate (actual rows=260.00 loops=1)
+                                       Group Key: category_walk.descendant_id, category_walk.ancestor_id
+                                       Batches: 1  Memory Usage: 56kB
+                                       Buffers: shared hit=4
+                                       ->  CTE Scan on category_walk (actual rows=260.00 loops=1)
+                                             Filter: (NOT cycle_detected)
+                                             Rows Removed by Filter: 2
+                                             Storage: Memory  Maximum Storage: 34kB
+                                             Buffers: shared hit=4
+                                 ->  Hash (actual rows=94.00 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                                       ->  Subquery Scan on cq (actual rows=94.00 loops=1)
+                                             ->  HashAggregate (actual rows=94.00 loops=1)
+                                                   Group Key: category_walk_1.descendant_id
+                                                   Batches: 1  Memory Usage: 32kB
+                                                   ->  CTE Scan on category_walk category_walk_1 (actual rows=262.00 loops=1)
+                                                         Storage: Memory  Maximum Storage: 34kB
+                           ->  Hash (actual rows=3986.00 loops=1)
+                                 Buckets: 4096  Batches: 1  Memory Usage: 204kB
+                                 Buffers: shared hit=40
+                                 ->  Seq Scan on products p (actual rows=4023.00 loops=1)
+                                       Buffers: shared hit=40
+               ->  Hash (actual rows=94.00 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 13kB
+                     Buffers: shared hit=1
+                     ->  Seq Scan on categories c (actual rows=94.00 loops=1)
+                           Buffers: shared hit=1
+         ->  Aggregate (actual rows=1.00 loops=1)
+               Buffers: shared hit=40
+               ->  Seq Scan on products p_1 (actual rows=37.00 loops=1)
+                     Filter: (category_id IS NULL)
+                     Rows Removed by Filter: 3986
+                     Buffers: shared hit=40
+ Planning:
+   Buffers: shared hit=48
+ Planning Time: 1.234 ms
+ Execution Time: 6.022 ms
+(79 rows)
+
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=95.00 loops=1)
+   Sort Key: c.category_id
+   Sort Method: quicksort  Memory: 31kB
+   Buffers: shared hit=85
+   CTE category_walk
+     ->  Recursive Union (actual rows=262.00 loops=1)
+           Storage: Memory  Maximum Storage: 44kB
+           Buffers: shared hit=4
+           ->  Seq Scan on categories c_1 (actual rows=94.00 loops=1)
+                 Buffers: shared hit=2
+                 SubPlan 2
+                   ->  Seq Scan on categories p_2 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+           ->  Hash Join (actual rows=42.00 loops=4)
+                 Hash Cond: (cw.parent_id = parent.category_id)
+                 Buffers: shared hit=2
+                 ->  WorkTable Scan on category_walk cw (actual rows=65.00 loops=4)
+                       Filter: (NOT cycle_detected)
+                       Rows Removed by Filter: 0
+                 ->  Hash (actual rows=94.00 loops=1)
+                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                       Buffers: shared hit=1
+                       ->  Seq Scan on categories parent (actual rows=94.00 loops=1)
+                             Buffers: shared hit=1
+                 SubPlan 4
+                   ->  Seq Scan on categories p_3 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+   ->  Append (actual rows=95.00 loops=1)
+         Buffers: shared hit=85
+         ->  Hash Right Join (actual rows=94.00 loops=1)
+               Hash Cond: (category_walk.ancestor_id = c.category_id)
+               Buffers: shared hit=45
+               ->  HashAggregate (actual rows=94.00 loops=1)
+                     Group Key: category_walk.ancestor_id
+                     Batches: 1  Memory Usage: 40kB
+                     Buffers: shared hit=44
+                     ->  Hash Left Join (actual rows=12919.00 loops=1)
+                           Hash Cond: (category_walk.descendant_id = p.category_id)
+                           Buffers: shared hit=44
+                           ->  Hash Join (actual rows=260.00 loops=1)
+                                 Hash Cond: (category_walk.descendant_id = cq.descendant_id)
+                                 Buffers: shared hit=4
+                                 ->  HashAggregate (actual rows=260.00 loops=1)
+                                       Group Key: category_walk.descendant_id, category_walk.ancestor_id
+                                       Batches: 1  Memory Usage: 56kB
+                                       Buffers: shared hit=4
+                                       ->  CTE Scan on category_walk (actual rows=260.00 loops=1)
+                                             Filter: (NOT cycle_detected)
+                                             Rows Removed by Filter: 2
+                                             Storage: Memory  Maximum Storage: 34kB
+                                             Buffers: shared hit=4
+                                 ->  Hash (actual rows=94.00 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                                       ->  Subquery Scan on cq (actual rows=94.00 loops=1)
+                                             ->  HashAggregate (actual rows=94.00 loops=1)
+                                                   Group Key: category_walk_1.descendant_id
+                                                   Batches: 1  Memory Usage: 32kB
+                                                   ->  CTE Scan on category_walk category_walk_1 (actual rows=262.00 loops=1)
+                                                         Storage: Memory  Maximum Storage: 34kB
+                           ->  Hash (actual rows=3986.00 loops=1)
+                                 Buckets: 4096  Batches: 1  Memory Usage: 204kB
+                                 Buffers: shared hit=40
+                                 ->  Seq Scan on products p (actual rows=4023.00 loops=1)
+                                       Buffers: shared hit=40
+               ->  Hash (actual rows=94.00 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 13kB
+                     Buffers: shared hit=1
+                     ->  Seq Scan on categories c (actual rows=94.00 loops=1)
+                           Buffers: shared hit=1
+         ->  Aggregate (actual rows=1.00 loops=1)
+               Buffers: shared hit=40
+               ->  Seq Scan on products p_1 (actual rows=37.00 loops=1)
+                     Filter: (category_id IS NULL)
+                     Rows Removed by Filter: 3986
+                     Buffers: shared hit=40
+ Planning Time: 0.968 ms
+ Execution Time: 3.771 ms
+(77 rows)
+
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=95.00 loops=1)
+   Sort Key: c.category_id
+   Sort Method: quicksort  Memory: 31kB
+   Buffers: shared hit=85
+   CTE category_walk
+     ->  Recursive Union (actual rows=262.00 loops=1)
+           Storage: Memory  Maximum Storage: 44kB
+           Buffers: shared hit=4
+           ->  Seq Scan on categories c_1 (actual rows=94.00 loops=1)
+                 Buffers: shared hit=2
+                 SubPlan 2
+                   ->  Seq Scan on categories p_2 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+           ->  Hash Join (actual rows=42.00 loops=4)
+                 Hash Cond: (cw.parent_id = parent.category_id)
+                 Buffers: shared hit=2
+                 ->  WorkTable Scan on category_walk cw (actual rows=65.00 loops=4)
+                       Filter: (NOT cycle_detected)
+                       Rows Removed by Filter: 0
+                 ->  Hash (actual rows=94.00 loops=1)
+                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                       Buffers: shared hit=1
+                       ->  Seq Scan on categories parent (actual rows=94.00 loops=1)
+                             Buffers: shared hit=1
+                 SubPlan 4
+                   ->  Seq Scan on categories p_3 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+   ->  Append (actual rows=95.00 loops=1)
+         Buffers: shared hit=85
+         ->  Hash Right Join (actual rows=94.00 loops=1)
+               Hash Cond: (category_walk.ancestor_id = c.category_id)
+               Buffers: shared hit=45
+               ->  HashAggregate (actual rows=94.00 loops=1)
+                     Group Key: category_walk.ancestor_id
+                     Batches: 1  Memory Usage: 40kB
+                     Buffers: shared hit=44
+                     ->  Hash Left Join (actual rows=12919.00 loops=1)
+                           Hash Cond: (category_walk.descendant_id = p.category_id)
+                           Buffers: shared hit=44
+                           ->  Hash Join (actual rows=260.00 loops=1)
+                                 Hash Cond: (category_walk.descendant_id = cq.descendant_id)
+                                 Buffers: shared hit=4
+                                 ->  HashAggregate (actual rows=260.00 loops=1)
+                                       Group Key: category_walk.descendant_id, category_walk.ancestor_id
+                                       Batches: 1  Memory Usage: 56kB
+                                       Buffers: shared hit=4
+                                       ->  CTE Scan on category_walk (actual rows=260.00 loops=1)
+                                             Filter: (NOT cycle_detected)
+                                             Rows Removed by Filter: 2
+                                             Storage: Memory  Maximum Storage: 34kB
+                                             Buffers: shared hit=4
+                                 ->  Hash (actual rows=94.00 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                                       ->  Subquery Scan on cq (actual rows=94.00 loops=1)
+                                             ->  HashAggregate (actual rows=94.00 loops=1)
+                                                   Group Key: category_walk_1.descendant_id
+                                                   Batches: 1  Memory Usage: 32kB
+                                                   ->  CTE Scan on category_walk category_walk_1 (actual rows=262.00 loops=1)
+                                                         Storage: Memory  Maximum Storage: 34kB
+                           ->  Hash (actual rows=3986.00 loops=1)
+                                 Buckets: 4096  Batches: 1  Memory Usage: 204kB
+                                 Buffers: shared hit=40
+                                 ->  Seq Scan on products p (actual rows=4023.00 loops=1)
+                                       Buffers: shared hit=40
+               ->  Hash (actual rows=94.00 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 13kB
+                     Buffers: shared hit=1
+                     ->  Seq Scan on categories c (actual rows=94.00 loops=1)
+                           Buffers: shared hit=1
+         ->  Aggregate (actual rows=1.00 loops=1)
+               Buffers: shared hit=40
+               ->  Seq Scan on products p_1 (actual rows=37.00 loops=1)
+                     Filter: (category_id IS NULL)
+                     Rows Removed by Filter: 3986
+                     Buffers: shared hit=40
+ Planning Time: 1.087 ms
+ Execution Time: 4.728 ms
+(77 rows)
+
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=95.00 loops=1)
+   Sort Key: c.category_id
+   Sort Method: quicksort  Memory: 31kB
+   Buffers: shared hit=85
+   CTE category_walk
+     ->  Recursive Union (actual rows=262.00 loops=1)
+           Storage: Memory  Maximum Storage: 44kB
+           Buffers: shared hit=4
+           ->  Seq Scan on categories c_1 (actual rows=94.00 loops=1)
+                 Buffers: shared hit=2
+                 SubPlan 2
+                   ->  Seq Scan on categories p_2 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+           ->  Hash Join (actual rows=42.00 loops=4)
+                 Hash Cond: (cw.parent_id = parent.category_id)
+                 Buffers: shared hit=2
+                 ->  WorkTable Scan on category_walk cw (actual rows=65.00 loops=4)
+                       Filter: (NOT cycle_detected)
+                       Rows Removed by Filter: 0
+                 ->  Hash (actual rows=94.00 loops=1)
+                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                       Buffers: shared hit=1
+                       ->  Seq Scan on categories parent (actual rows=94.00 loops=1)
+                             Buffers: shared hit=1
+                 SubPlan 4
+                   ->  Seq Scan on categories p_3 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+   ->  Append (actual rows=95.00 loops=1)
+         Buffers: shared hit=85
+         ->  Hash Right Join (actual rows=94.00 loops=1)
+               Hash Cond: (category_walk.ancestor_id = c.category_id)
+               Buffers: shared hit=45
+               ->  HashAggregate (actual rows=94.00 loops=1)
+                     Group Key: category_walk.ancestor_id
+                     Batches: 1  Memory Usage: 40kB
+                     Buffers: shared hit=44
+                     ->  Hash Left Join (actual rows=12919.00 loops=1)
+                           Hash Cond: (category_walk.descendant_id = p.category_id)
+                           Buffers: shared hit=44
+                           ->  Hash Join (actual rows=260.00 loops=1)
+                                 Hash Cond: (category_walk.descendant_id = cq.descendant_id)
+                                 Buffers: shared hit=4
+                                 ->  HashAggregate (actual rows=260.00 loops=1)
+                                       Group Key: category_walk.descendant_id, category_walk.ancestor_id
+                                       Batches: 1  Memory Usage: 56kB
+                                       Buffers: shared hit=4
+                                       ->  CTE Scan on category_walk (actual rows=260.00 loops=1)
+                                             Filter: (NOT cycle_detected)
+                                             Rows Removed by Filter: 2
+                                             Storage: Memory  Maximum Storage: 34kB
+                                             Buffers: shared hit=4
+                                 ->  Hash (actual rows=94.00 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                                       ->  Subquery Scan on cq (actual rows=94.00 loops=1)
+                                             ->  HashAggregate (actual rows=94.00 loops=1)
+                                                   Group Key: category_walk_1.descendant_id
+                                                   Batches: 1  Memory Usage: 32kB
+                                                   ->  CTE Scan on category_walk category_walk_1 (actual rows=262.00 loops=1)
+                                                         Storage: Memory  Maximum Storage: 34kB
+                           ->  Hash (actual rows=3986.00 loops=1)
+                                 Buckets: 4096  Batches: 1  Memory Usage: 204kB
+                                 Buffers: shared hit=40
+                                 ->  Seq Scan on products p (actual rows=4023.00 loops=1)
+                                       Buffers: shared hit=40
+               ->  Hash (actual rows=94.00 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 13kB
+                     Buffers: shared hit=1
+                     ->  Seq Scan on categories c (actual rows=94.00 loops=1)
+                           Buffers: shared hit=1
+         ->  Aggregate (actual rows=1.00 loops=1)
+               Buffers: shared hit=40
+               ->  Seq Scan on products p_1 (actual rows=37.00 loops=1)
+                     Filter: (category_id IS NULL)
+                     Rows Removed by Filter: 3986
+                     Buffers: shared hit=40
+ Planning Time: 1.071 ms
+ Execution Time: 3.704 ms
+(77 rows)
+
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=95.00 loops=1)
+   Sort Key: c.category_id
+   Sort Method: quicksort  Memory: 31kB
+   Buffers: shared hit=85
+   CTE category_walk
+     ->  Recursive Union (actual rows=262.00 loops=1)
+           Storage: Memory  Maximum Storage: 44kB
+           Buffers: shared hit=4
+           ->  Seq Scan on categories c_1 (actual rows=94.00 loops=1)
+                 Buffers: shared hit=2
+                 SubPlan 2
+                   ->  Seq Scan on categories p_2 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+           ->  Hash Join (actual rows=42.00 loops=4)
+                 Hash Cond: (cw.parent_id = parent.category_id)
+                 Buffers: shared hit=2
+                 ->  WorkTable Scan on category_walk cw (actual rows=65.00 loops=4)
+                       Filter: (NOT cycle_detected)
+                       Rows Removed by Filter: 0
+                 ->  Hash (actual rows=94.00 loops=1)
+                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                       Buffers: shared hit=1
+                       ->  Seq Scan on categories parent (actual rows=94.00 loops=1)
+                             Buffers: shared hit=1
+                 SubPlan 4
+                   ->  Seq Scan on categories p_3 (actual rows=94.00 loops=1)
+                         Buffers: shared hit=1
+   ->  Append (actual rows=95.00 loops=1)
+         Buffers: shared hit=85
+         ->  Hash Right Join (actual rows=94.00 loops=1)
+               Hash Cond: (category_walk.ancestor_id = c.category_id)
+               Buffers: shared hit=45
+               ->  HashAggregate (actual rows=94.00 loops=1)
+                     Group Key: category_walk.ancestor_id
+                     Batches: 1  Memory Usage: 40kB
+                     Buffers: shared hit=44
+                     ->  Hash Left Join (actual rows=12919.00 loops=1)
+                           Hash Cond: (category_walk.descendant_id = p.category_id)
+                           Buffers: shared hit=44
+                           ->  Hash Join (actual rows=260.00 loops=1)
+                                 Hash Cond: (category_walk.descendant_id = cq.descendant_id)
+                                 Buffers: shared hit=4
+                                 ->  HashAggregate (actual rows=260.00 loops=1)
+                                       Group Key: category_walk.descendant_id, category_walk.ancestor_id
+                                       Batches: 1  Memory Usage: 56kB
+                                       Buffers: shared hit=4
+                                       ->  CTE Scan on category_walk (actual rows=260.00 loops=1)
+                                             Filter: (NOT cycle_detected)
+                                             Rows Removed by Filter: 2
+                                             Storage: Memory  Maximum Storage: 34kB
+                                             Buffers: shared hit=4
+                                 ->  Hash (actual rows=94.00 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
+                                       ->  Subquery Scan on cq (actual rows=94.00 loops=1)
+                                             ->  HashAggregate (actual rows=94.00 loops=1)
+                                                   Group Key: category_walk_1.descendant_id
+                                                   Batches: 1  Memory Usage: 32kB
+                                                   ->  CTE Scan on category_walk category_walk_1 (actual rows=262.00 loops=1)
+                                                         Storage: Memory  Maximum Storage: 34kB
+                           ->  Hash (actual rows=3986.00 loops=1)
+                                 Buckets: 4096  Batches: 1  Memory Usage: 204kB
+                                 Buffers: shared hit=40
+                                 ->  Seq Scan on products p (actual rows=4023.00 loops=1)
+                                       Buffers: shared hit=40
+               ->  Hash (actual rows=94.00 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 13kB
+                     Buffers: shared hit=1
+                     ->  Seq Scan on categories c (actual rows=94.00 loops=1)
+                           Buffers: shared hit=1
+         ->  Aggregate (actual rows=1.00 loops=1)
+               Buffers: shared hit=40
+               ->  Seq Scan on products p_1 (actual rows=37.00 loops=1)
+                     Filter: (category_id IS NULL)
+                     Rows Removed by Filter: 3986
+                     Buffers: shared hit=40
+ Planning Time: 0.723 ms
+ Execution Time: 3.771 ms
+(77 rows)
+
+==== Output: roots, the Electronics > Phones > Phone Accessories > Cases chain, defects, uncategorised
+ category_id |     category_name      | total_products | total_stock_units | low_stock_products | low_stock_units | hierarchy_cycle_detected | missing_parent_detected 
+-------------+------------------------+----------------+-------------------+--------------------+-----------------+--------------------------+-------------------------
+         101 | Electronics            |           1238 |             77308 |                521 |             906 | f                        | f
+         102 | Phones                 |            395 |             23475 |                170 |             293 | f                        | f
+         105 | Phone Accessories      |            265 |             17064 |                114 |             212 | f                        | f
+         106 | Cases                  |             71 |              4704 |                 34 |              77 | f                        | f
+         128 | Home Appliances        |            599 |             40124 |                228 |             358 | f                        | f
+         141 | Fashion                |            676 |             40840 |                302 |             570 | f                        | f
+         155 | Groceries              |            770 |             51789 |                322 |             540 | f                        | f
+         172 | Health and Beauty      |            376 |             25969 |                158 |             317 | f                        | f
+         182 | Baby and Toys          |            321 |             16756 |                139 |             228 | f                        | f
+        9001 | Seasonal Promotions    |              6 |               440 |                  3 |               8 | t                        | f
+        9002 | Promotions             |              6 |               440 |                  3 |               8 | t                        | f
+        9003 | Clearance              |              0 |                 0 |                  0 |               0 | f                        | t
+        9004 | Flash Sale Items       |              0 |                 0 |                  0 |               0 | f                        | f
+        9005 | Back to School         |              0 |                 0 |                  0 |               0 | f                        | f
+             | (no category assigned) |             37 |              3112 |                 12 |              12 | f                        | f
+(15 rows)
+
+==== Reconciliation: sum over root categories + uncategorised = all products (cycle members counted separately)
+ rolled_up_from_roots | all_products | under_cycle_or_orphan 
+----------------------+--------------+-----------------------
+                 4017 |         4023 |                     6
+(1 row)
+
+==== Independent check of Electronics (101) with a separate recursive query
+ products | units | low_products 
+----------+-------+--------------
+     1238 | 77308 |          521
+(1 row)
+
