@@ -28,6 +28,8 @@
 --     rows, with zero spend, zero orders and a zero running total.
 -- ============================================================
 
+\set ON_ERROR_STOP on
+
 BEGIN;
 
 -- Makes the script re-runnable, and replaces the view and index
