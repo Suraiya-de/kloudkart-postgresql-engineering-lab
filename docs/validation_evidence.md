@@ -77,7 +77,7 @@ The current view can emit up to 13 monthly rows per selected customer (at most 1
 Obtain `race_test.py` and its documented dependencies/options from the course materials. Run it only against a designated disposable/test database and the test product/data it specifies: the test creates orders and changes stock. Once the invocation is known, measure wall time in PowerShell as follows, replacing the path and adding only the arguments documented by that script:
 
 ```powershell
-$raceTest = "C:\path\to\course\race_test.py"
+$raceTest = "C:|path\to\course\race_test.py"
 $timer = [System.Diagnostics.Stopwatch]::StartNew()
 python $raceTest
 $exitCode = $LASTEXITCODE
@@ -113,3 +113,64 @@ ORDER BY category_id;
 ```
 
 No actual report counts, monitoring output, recursive results, concurrency duration, or inventory rollback result is available to enter here yet. Add results only after recording the genuine command/query, test conditions and output.
+
+---
+
+## Runtime validation update - 2026-11-27
+
+This section supersedes the earlier audit statement that no database test had been run. The earlier audit describes the state before this runtime validation.
+
+### Verified database environment
+
+| Item | Result |
+|---|---|
+| Database | kloudkart_lab |
+| PostgreSQL | 18.7 |
+| Database user | postgres |
+| max_connections | 500 |
+| Sessions before test | 9 |
+| Categories | 94 |
+| Products | 4,023 |
+| Customers | 40,420 |
+| Orders | 159,384 |
+| Order items | 336,559 |
+| Inventory log | 282,352 |
+| Deployed order function | public.place_order(bigint,bigint,integer) |
+
+### Course concurrency test - PASSED
+
+The supplied race_test.py was executed against kloudkart_lab.
+
+| Scenario | Actual result |
+|---|---|
+| Two buyers competing for one unit, 25 rounds | 25/25 rounds passed; exactly one winner per round |
+| Flash sale, 400 concurrent buyers and 50 units | 50 sold; 350 refused; 0 errors |
+| Flash-sale duration reported by test | 6.95 seconds |
+| Request exceeding available stock | Rejected; stock untouched |
+| Inventory audit after contention | 5 sales; 5 movements recorded |
+| Python process exit code | 0 |
+| Overall result | PASSED |
+
+The 400-attempt test completed below the assignment's 10-second target. This result applies to the tested workload and environment.
+
+Original output: [race_test_2026-11-27.txt](evidence/race_test_2026-11-27.txt). The course-provided test script remains external to this repository.
+
+### Post-test cleanup
+
+A query against public.products found zero remaining rows with product_name matching RACE TEST FIXTURE%. The race-test fixtures were cleaned up.
+
+### Remaining validation work
+
+| Item | Status |
+|---|---|
+| Order-placement concurrency | Passed |
+| Insufficient-stock handling | Passed |
+| Inventory movements during tested sales | Passed |
+| Race-test fixture cleanup | Verified |
+| Customer spending report row count | Not yet measured |
+| Report execution plans and before/after timings | Not yet measured |
+| Monitoring view runtime output | Not yet verified; 12 checks defined in SQL source |
+| Recursive cycle and missing-parent runtime checks | Not yet verified |
+| Inventory movement rollback on induced failure | Not yet verified |
+
+The concurrency test does not establish that every other SQL solution has passed runtime validation.
