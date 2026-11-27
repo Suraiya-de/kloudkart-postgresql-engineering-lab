@@ -19,8 +19,8 @@ Measured on a laptop against a fresh load of the course data (159,384 orders, 40
 
 | Nana's criterion | Result |
 |---|---|
-| No overselling | Course `race_test.py` passed unmodified, 3 runs out of 3. 400 buyers for one product: 400 orders in 3.3-3.4 s, none oversold, no errors. |
-| Fast Monday report | Every customer, 12 months, running totals and ranking in 1.38 s, against about 3 hours for a per-customer version. |
+| No overselling | Course `race_test.py` passed unmodified, 3 runs out of 3. 400 buyers for one product: 400 orders in 3.8-4.3 s, none oversold, no errors. |
+| Fast Monday report | Every customer, 12 months, running totals and ranking in 1.64 s, against about 4 hours for a per-customer version. |
 | Low stock at a glance | Full category roll-up, any depth, in about 4 ms. |
 | Proof of what happened | Every change to a product's stock writes an `inventory_log` row, including changes made outside the provided functions. |
 

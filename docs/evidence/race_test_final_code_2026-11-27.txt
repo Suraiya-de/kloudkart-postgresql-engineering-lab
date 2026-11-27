@@ -3,12 +3,16 @@ Kloud Kart - Course race test against the final code
 
 Date: 2026-11-27
 Environment: Windows 11 laptop, Docker Desktop; PostgreSQL 18.7 container (8 vCPU, 16 GB visible),
-shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC.
-Database: kloudkart_audit (a scratch database), created empty and loaded with the course schema.sql and load.sql
-(categories 94, products 4,023, customers 40,420, orders 159,384, order_items 336,559, inventory_log 282,352).
+shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC; CPython 3.15.2,
+psycopg2-binary 2.9.13.
+Database: kloudkart_audit, a scratch database created empty and loaded with course/schema.sql
+and course/load.sql (categories 94, products 4,023, customers 40,420, orders 159,384,
+order_items 336,559, inventory_log 282,352). A separate database was used so the existing
+kloudkart_lab database was not reset. Schema, data and scripts are the same as in the README's
+Compose setup, which names the database kloudkart_lab.
 
 Solutions deployed with sql/run_all.sql immediately before this run.
-Command: python race_test.py   (course file, unmodified; Python 3.15.2, psycopg2-binary 2.9.13)
+Command: python course/race_test.py   (course file, unmodified)
 Repeated three times. Result: PASSED 3/3, exit code 0 each time.
 
 ##### RUN 1
@@ -20,8 +24,8 @@ Test 1 — two buyers, one unit, 25 rounds
   ok    25/25 rounds: exactly one winner, stock 0, one order, no errors
 
 Test 2 — flash sale: 400 buyers, 50 units
-        50 sold, 350 refused, 0 errored, wall clock 4.30s
-  ok    exactly 50 sold, none oversold, no errors, 4.30s
+        50 sold, 350 refused, 0 errored, wall clock 4.90s
+  ok    exactly 50 sold, none oversold, no errors, 4.90s
 
 Test 3 — asking for more than exists
   ok    refused cleanly, stock untouched
@@ -41,8 +45,8 @@ Test 1 — two buyers, one unit, 25 rounds
   ok    25/25 rounds: exactly one winner, stock 0, one order, no errors
 
 Test 2 — flash sale: 400 buyers, 50 units
-        50 sold, 350 refused, 0 errored, wall clock 4.16s
-  ok    exactly 50 sold, none oversold, no errors, 4.16s
+        50 sold, 350 refused, 0 errored, wall clock 6.88s
+  ok    exactly 50 sold, none oversold, no errors, 6.88s
 
 Test 3 — asking for more than exists
   ok    refused cleanly, stock untouched
@@ -62,8 +66,8 @@ Test 1 — two buyers, one unit, 25 rounds
   ok    25/25 rounds: exactly one winner, stock 0, one order, no errors
 
 Test 2 — flash sale: 400 buyers, 50 units
-        50 sold, 350 refused, 0 errored, wall clock 4.65s
-  ok    exactly 50 sold, none oversold, no errors, 4.65s
+        50 sold, 350 refused, 0 errored, wall clock 4.75s
+  ok    exactly 50 sold, none oversold, no errors, 4.75s
 
 Test 3 — asking for more than exists
   ok    refused cleanly, stock untouched

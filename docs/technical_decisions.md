@@ -6,8 +6,8 @@ This document explains how each of Nana's four requirements was met, what was re
 
 | Requirement | Mechanism | Measured result |
 |---|---|---|
-| No overselling | `place_order()`: one conditional `UPDATE` that checks and deducts stock together, plus a `CHECK (stock_quantity >= 0)` backstop | Course race test passed 3/3; 400 orders on one product in 3.3-3.4 s, none oversold |
-| Fast Monday report | `customer_spending_report(p_as_of)`: one set-based pass with window functions | 40,420 customers in 1.38 s (median), against about 3 hours for the per-customer approach |
+| No overselling | `place_order()`: one conditional `UPDATE` that checks and deducts stock together, plus a `CHECK (stock_quantity >= 0)` backstop | Course race test passed 3/3; 400 orders on one product in 3.8-4.3 s, none oversold |
+| Fast Monday report | `customer_spending_report(p_as_of)`: one set-based pass with window functions | 40,420 customers in 1.64 s (median), against about 4 hours for the per-customer approach |
 | Low-stock roll-up | `low_stock_by_category()`: recursive walk of any depth with a cycle guard | 4 ms |
 | Proof of what happened | Every inventory function writes `inventory_log`; a trigger logs any other update to a product's stock | Verified by `sql/tests/verify_solution.sql` |
 
@@ -62,8 +62,8 @@ Marketing expects about 400 orders in ten seconds on one product. Every buyer of
 
 | Test | Result |
 |---|---|
-| Course race test, 400 buyers for 50 units, 3 runs | 50 sold, 350 refused, 0 errors; 4.2-4.7 s |
-| `scripts/flash_sale_benchmark.py`, 400 buyers for 400 units, 3 runs | 400 sold, 0 errors, 400 log rows; 3.3-3.4 s; median wait 1.7-1.8 s, slowest buyer 3.2-3.4 s |
+| Course race test, 400 buyers for 50 units, 3 runs | 50 sold, 350 refused, 0 errors; 4.8-6.9 s |
+| `scripts/flash_sale_benchmark.py`, 400 buyers for 400 units, 3 runs | 400 sold, 0 errors, 400 log rows; 3.8-4.3 s; median wait 2.0-2.6 s, slowest buyer 3.8-4.3 s |
 
 What survives: correctness under any level of contention, and 400 orders in under five seconds on a laptop. What would fail first is not the locking but the connections. The test opens 400 database connections at once; PostgreSQL's default limit is 100, and the lab server was configured with 500 to run it. In production the application must use a connection pool (a few dozen connections serving many buyers), so buyers wait in the pool's queue rather than being refused a connection. That is a configuration task for Nana's developers, not new infrastructure, and it is listed in the memo as unverified.
 
@@ -88,19 +88,19 @@ The usual hand-built version of this report computes each figure with its own lo
 
 | Version | Time |
 |---|---|
-| Per-customer lookups, no index | 27.3 s per 100 customers, so about 3 hours for all customers (extrapolated) |
-| Per-customer lookups, index on customer | 46 ms per 100 customers, about 18 s for all (extrapolated) |
-| **Set-based, as shipped** | **1.38 s for all customers (median of 5)** |
-| Set-based plus a covering index | 1.28 s (7% faster) |
-| Set-based with more sort memory | 1.47 s (not faster) |
+| Per-customer lookups, no index | 34.0 s per 100 customers, so about 4 hours for all customers (extrapolated) |
+| Per-customer lookups, index on customer | 52 ms per 100 customers, about 21 s for all (extrapolated) |
+| **Set-based, as shipped** | **1.64 s for all customers (median of 5)** |
+| Set-based plus a covering index | 1.46 s (11% faster) |
+| Set-based with more sort memory | 1.67 s (not faster) |
 
-Adwoa's actual query was not supplied, so the first row is a reconstruction of the usual shape, not her code; it lands in the same range as her 40 minutes. The point holds whatever the exact query: a server twice as fast turns 3 hours into 1.5. The cost grows with customers times months times orders, and Kloud Kart is growing on all three. The fix is to stop asking the database the same question 485,000 times, and that costs nothing.
+Adwoa's actual query was not supplied, so the first row is a reconstruction of the usual shape, not her code. It is slower than her 40 minutes, so her query is probably less naive, but it has the same shape of cost. The point holds whatever the exact query: a server twice as fast turns 4 hours into 2, or 40 minutes into 20. The cost grows with customers times months times orders, and Kloud Kart is growing on all three. The fix is to stop asking the database the same question 485,000 times, and that costs nothing.
 
 ### Knowing when to stop
 
-- **No index was added for the report.** A covering index saved about 100 ms on a once-a-week report, but every index on `orders` is extra work on every insert, including 400 inserts in ten seconds during a flash sale. The trade is not worth it.
+- **No index was added for the report.** A covering index saved about 180 ms on a once-a-week report, but every index on `orders` is extra work on every insert, including 400 inserts in ten seconds during a flash sale. The trade is not worth it.
 - **No memory tuning.** The plan shows the sorts spilling to disk, but keeping them in memory made the report no faster. The remaining time is real work on 485,040 output rows.
-- **No materialised (pre-computed) copy.** At 1.4 s there is nothing to cache, and a cached copy can be stale on the Monday it matters.
+- **No materialised (pre-computed) copy.** At under two seconds there is nothing to cache, and a cached copy can be stale on the Monday it matters.
 
 ### Decisions the brief left open
 
@@ -179,4 +179,4 @@ No foreign keys or `NOT NULL` constraints were added. Each would fail on the exi
 - **A top-100-only report** gives Adwoa no figure for the other 40,320 customers, so she keeps her spreadsheet.
 - **A fixed three-join category query** silently drops products the day marketing adds a fourth level.
 - **An audit trail written only by the functions** keeps drifting the way the extract already has, because any other update path leaves no record.
-- **An index added "for the report"** taxes every flash-sale order to save 100 ms once a week.
+- **An index added "for the report"** taxes every flash-sale order to save 180 ms once a week.

@@ -9,7 +9,7 @@
 -- Asserts:  one row per customer per month for the 12 calendar
 --           months ending in the as-of month; for every customer
 --           the final running_total equals total_spent; the full
---           report returns in about 1.4 s on a laptop (see
+--           report returns in under two seconds on a laptop (see
 --           docs/evidence/report_benchmark_2026-11-27.txt).
 --
 -- Definitions (see docs/technical_decisions.md, section 3):
@@ -38,7 +38,7 @@ DROP VIEW IF EXISTS public.customer_spending_top100;
 DROP VIEW IF EXISTS public.customer_spending_report;
 
 -- No supporting index is created. A partial covering index made
--- the full report only 7% faster (1,375 ms to 1,277 ms), while
+-- the full report only 11% faster (1,635 ms to 1,459 ms), while
 -- every index on orders adds work to each flash-sale insert.
 -- See docs/evidence/report_benchmark_2026-11-27.txt.
 DROP INDEX IF EXISTS public.idx_orders_completed_spending;
