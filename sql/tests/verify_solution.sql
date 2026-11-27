@@ -1,7 +1,7 @@
 -- ============================================================
 -- Kloud Kart: Solution verification
 --
--- Input:    a fresh load with solutions 01-04 and the monitoring
+-- Input:    a fresh load with solutions 00-04 and the monitoring
 --           view deployed (run_all.sql does this).
 -- Produces: one NOTICE per passed assertion; stops on the first
 --           failure.
@@ -9,6 +9,17 @@
 --           queries; order placement, inventory movements, the
 --           audit trigger and the stock constraint behave as
 --           documented. Every write is rolled back.
+--
+-- Expected values are derived from the data, not hard-coded, so
+-- the assertions hold for any extract, including a clean one.
+--
+-- Section 3 runs inside BEGIN ... ROLLBACK. Its negative-stock
+-- test catches check_violation in a PL/pgSQL EXCEPTION block,
+-- which runs the failing statement in its own subtransaction.
+-- PostgreSQL rolls back only that subtransaction, so the outer
+-- transaction is never left aborted (documented behaviour in
+-- every supported version); the final ROLLBACK then discards all
+-- of section 3's writes.
 --
 -- The concurrency guarantee is proven separately by the course
 -- race_test.py; see docs/validation_evidence.md.
@@ -30,6 +41,7 @@ DECLARE
     v_report_total numeric;
     v_independent_total numeric;
     v_top100_rows bigint;
+    v_top100_customers bigint;
 BEGIN
     SELECT COUNT(*) INTO v_customers FROM public.customers;
 
@@ -59,7 +71,7 @@ BEGIN
     SELECT SUM(o.total_amount)
     INTO v_independent_total
     FROM public.orders o
-    WHERE LOWER(BTRIM(o.status)) IN ('completed', 'complete')
+    WHERE public.is_sale_status(o.status)
       AND o.order_date <= v_as_of
       AND EXISTS (
           SELECT 1 FROM public.customers c WHERE c.customer_id = o.customer_id
@@ -72,11 +84,17 @@ BEGIN
     RAISE NOTICE 'PASS report: total spend % matches an independent sum',
         v_report_total;
 
-    SELECT COUNT(*) INTO v_top100_rows FROM public.customer_spending_top100;
-    IF v_top100_rows <> 1200 THEN
-        RAISE EXCEPTION 'Top-100 view has % rows, expected 1200', v_top100_rows;
+    SELECT COUNT(*), COUNT(DISTINCT customer_id)
+    INTO v_top100_rows, v_top100_customers
+    FROM public.customer_spending_top100;
+
+    IF v_top100_customers <> LEAST(100, v_customers)
+       OR v_top100_rows <> 12 * v_top100_customers THEN
+        RAISE EXCEPTION 'Top-100 view has % rows for % customers, expected 12 rows for each of % customers',
+            v_top100_rows, v_top100_customers, LEAST(100, v_customers);
     END IF;
-    RAISE NOTICE 'PASS report: top-100 view returns 100 customers x 12 months';
+    RAISE NOTICE 'PASS report: top-100 view returns % customers x 12 months',
+        v_top100_customers;
 END;
 $$;
 
@@ -93,6 +111,8 @@ DECLARE
     v_independent_electronics bigint;
     v_cycle_flags bigint;
     v_missing_parent_flags bigint;
+    v_expected_cycle_flags bigint;
+    v_expected_missing_parent_flags bigint;
 BEGIN
     SELECT
         SUM(r.total_products) FILTER (
@@ -151,11 +171,42 @@ BEGIN
     RAISE NOTICE 'PASS roll-up: Electronics (% products) matches a top-down walk',
         v_rollup_electronics;
 
-    IF v_cycle_flags = 0 OR v_missing_parent_flags = 0 THEN
-        RAISE EXCEPTION 'Hierarchy defects not flagged (cycle %, missing parent %)',
-            v_cycle_flags, v_missing_parent_flags;
+    -- Independent count of the same defects, using PostgreSQL's
+    -- built-in CYCLE clause instead of the roll-up's path array.
+    -- A category is affected if its upward walk revisits a
+    -- category, or ends at a parent that does not exist.
+    WITH RECURSIVE walk (start_id, category_id, parent_id) AS (
+        SELECT category_id, category_id, parent_id
+        FROM public.categories
+
+        UNION ALL
+
+        SELECT w.start_id, c.category_id, c.parent_id
+        FROM walk w
+        JOIN public.categories c
+            ON c.category_id = w.parent_id
+    ) CYCLE category_id SET is_cycle USING visited
+    SELECT
+        COUNT(DISTINCT start_id) FILTER (WHERE is_cycle),
+        COUNT(DISTINCT start_id) FILTER (
+            WHERE NOT is_cycle
+              AND parent_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM public.categories p
+                  WHERE p.category_id = walk.parent_id
+              )
+        )
+    INTO v_expected_cycle_flags, v_expected_missing_parent_flags
+    FROM walk;
+
+    IF v_cycle_flags <> v_expected_cycle_flags
+       OR v_missing_parent_flags <> v_expected_missing_parent_flags THEN
+        RAISE EXCEPTION 'Roll-up flags cycle % / missing parent %, independent walk finds % / %',
+            v_cycle_flags, v_missing_parent_flags,
+            v_expected_cycle_flags, v_expected_missing_parent_flags;
     END IF;
-    RAISE NOTICE 'PASS roll-up: % cycle and % missing-parent categories flagged, query terminated',
+    RAISE NOTICE 'PASS roll-up: % cycle and % missing-parent categories flagged, matching an independent walk; query terminated',
         v_cycle_flags, v_missing_parent_flags;
 END;
 $$;
@@ -183,7 +234,15 @@ BEGIN
     ORDER BY product_id
     LIMIT 1;
 
+    IF v_product_id IS NULL THEN
+        RAISE EXCEPTION 'Verification needs a product with at least 10 units in stock; none exists in this load';
+    END IF;
+
     SELECT MIN(customer_id) INTO v_customer_id FROM public.customers;
+
+    IF v_customer_id IS NULL THEN
+        RAISE EXCEPTION 'Verification needs at least one customer; the customers table is empty';
+    END IF;
 
     -- 3a. Asking for more than exists is refused, stock untouched.
     SELECT * INTO v_result

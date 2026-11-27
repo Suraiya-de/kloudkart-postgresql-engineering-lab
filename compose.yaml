@@ -19,6 +19,10 @@ services:
       - max_connections=500
 
     volumes:
+      # From PostgreSQL 18 the image keeps its data in
+      # /var/lib/postgresql/18/docker (PGDATA) and declares its volume at
+      # /var/lib/postgresql, so this is the correct mount for postgres:18.7.
+      # /var/lib/postgresql/data was the location for version 17 and earlier.
       - kloudkart_data:/var/lib/postgresql
 
     healthcheck:

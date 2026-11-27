@@ -3,9 +3,16 @@ Kloud Kart - Low-stock category roll-up
 
 Date: 2026-11-27
 Environment: Windows 11 laptop, Docker Desktop; PostgreSQL 18.7 container (8 vCPU, 16 GB visible),
-shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC.
-Database: kloudkart_audit (a scratch database), created empty and loaded with the course schema.sql and load.sql
-(categories 94, products 4,023, customers 40,420, orders 159,384, order_items 336,559, inventory_log 282,352).
+shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC; CPython 3.15.2,
+psycopg2-binary 2.9.13.
+Database: kloudkart_audit, a scratch database created empty and loaded with course/schema.sql
+and course/load.sql (categories 94, products 4,023, customers 40,420, orders 159,384,
+order_items 336,559, inventory_log 282,352). A separate database was used so the existing
+kloudkart_lab database was not reset. Schema, data and scripts are the same as in the README's
+Compose setup, which names the database kloudkart_lab.
+
+The roll-up function and these timings predate the hygiene corrections, which
+only added a stop-on-error line to the script; the function body is unchanged.
 
 First plan: previous function with idx_categories_parent_id and
 idx_products_category_id present. Neither index appears in the plan.

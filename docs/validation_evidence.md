@@ -11,7 +11,7 @@ Every result in this repository's documentation comes from one of the runs below
 | PostgreSQL | 18.7 in a container (8 vCPU, 16 GB visible) |
 | Settings | `shared_buffers` 128MB, `work_mem` 4MB, `max_connections` 500, time zone UTC |
 | Python | 3.15.2 with `psycopg2-binary` 2.9.13 |
-| Database | `kloudkart_audit`, a scratch database created empty and loaded with the course `schema.sql` and `load.sql`; the README's Compose setup names it `kloudkart_lab` |
+| Database | `kloudkart_audit`, a scratch database created empty and loaded with `course/schema.sql` and `course/load.sql`. A separate database was used so the existing `kloudkart_lab` database was not reset; schema, data and scripts are the same as in the README's Compose setup, which names it `kloudkart_lab` |
 
 | Table | Rows after load |
 |---|---:|
@@ -38,11 +38,13 @@ Every result in this repository's documentation comes from one of the runs below
 | Refused movement | Stock and log unchanged | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
 | Direct stock update | Logged as `unlogged_update` | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
 | Write of negative stock | Rejected by the check constraint | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
-| Course `race_test.py`, unmodified, final code | PASSED 3/3; flash-sale test 4.30 s, 4.16 s, 4.65 s | [race_test_final_code](evidence/race_test_final_code_2026-11-27.txt) |
-| 400 orders on one product | 400 sold, 0 errors, 400 log rows, stock 0; 3.25-3.36 s over 3 runs, timed from release of all 400 connections | [flash_sale_400_orders](evidence/flash_sale_400_orders_2026-11-27.txt) |
-| Report before and after | About 3 hours (extrapolated) to 1.38 s | [report_benchmark](evidence/report_benchmark_2026-11-27.txt) |
+| Course `race_test.py`, unmodified, final code | PASSED 3/3; flash-sale test 4.90 s, 6.88 s, 4.75 s | [race_test_final_code](evidence/race_test_final_code_2026-11-27.txt) |
+| 400 orders on one product | 400 sold, 0 errors, 400 log rows, stock 0; 3.78-4.33 s over 3 runs, timed from release of all 400 connections | [flash_sale_400_orders](evidence/flash_sale_400_orders_2026-11-27.txt) |
+| Report before and after | About 4 hours (extrapolated) to 1.64 s | [report_benchmark](evidence/report_benchmark_2026-11-27.txt) |
 | Roll-up timing and index use | 3.7-6.0 ms; neither former index used | [rollup_benchmark](evidence/rollup_benchmark_2026-11-27.txt) |
 | Clean-up after all race and flash-sale runs | No fixture products left; no `unlogged_update` rows; orders, order items and log back to their loaded counts | [flash_sale_400_orders](evidence/flash_sale_400_orders_2026-11-27.txt) |
+
+Timings were re-recorded after the final changes, on a busier laptop than an earlier run the same morning (shipped report median 1.38 s then, 1.64 s now). Absolute times vary with machine load; every comparison in the evidence is between variants measured in the same run.
 
 ## What is not verified
 

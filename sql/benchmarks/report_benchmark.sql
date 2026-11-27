@@ -1,7 +1,9 @@
 -- ============================================================
 -- Kloud Kart: Monday report, before and after
 --
--- Input:    a fresh load with solution 02 deployed.
+-- Input:    a fresh load with solutions 00 and 02 deployed. Every
+--           variant uses public.is_sale_status(), so all five
+--           measure the same definition of a sale.
 -- Produces: EXPLAIN ANALYZE timings for five variants, recorded
 --           in docs/evidence/report_benchmark_2026-11-27.txt.
 -- Asserts:  nothing; this is a measurement.
@@ -53,21 +55,21 @@ SELECT
     c.full_name,
     (SELECT SUM(total_amount) FROM orders o
      WHERE o.customer_id = c.customer_id
-       AND lower(btrim(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date <= :as_of::timestamp) AS total_spent,
     (SELECT COUNT(*) FROM orders o
      WHERE o.customer_id = c.customer_id
-       AND lower(btrim(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date <= :as_of::timestamp) AS order_count,
     months.m,
     (SELECT COALESCE(SUM(total_amount), 0) FROM orders o
      WHERE o.customer_id = c.customer_id
-       AND lower(btrim(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date >= months.m
        AND o.order_date < months.m + interval '1 month') AS monthly_spend,
     (SELECT COALESCE(SUM(total_amount), 0) FROM orders o
      WHERE o.customer_id = c.customer_id
-       AND lower(btrim(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date < months.m + interval '1 month') AS running_total
 FROM customers c
 JOIN sample_customers s USING (customer_id)
@@ -94,21 +96,21 @@ SELECT
     c.full_name,
     (SELECT SUM(total_amount) FROM orders o
      WHERE o.customer_id = c.customer_id
-       AND lower(btrim(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date <= :as_of::timestamp) AS total_spent,
     (SELECT COUNT(*) FROM orders o
      WHERE o.customer_id = c.customer_id
-       AND lower(btrim(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date <= :as_of::timestamp) AS order_count,
     months.m,
     (SELECT COALESCE(SUM(total_amount), 0) FROM orders o
      WHERE o.customer_id = c.customer_id
-       AND lower(btrim(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date >= months.m
        AND o.order_date < months.m + interval '1 month') AS monthly_spend,
     (SELECT COALESCE(SUM(total_amount), 0) FROM orders o
      WHERE o.customer_id = c.customer_id
-       AND lower(btrim(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date < months.m + interval '1 month') AS running_total
 FROM customers c
 JOIN sample_customers s USING (customer_id)
@@ -135,7 +137,7 @@ EXPLAIN (ANALYZE, SUMMARY, TIMING OFF, COSTS OFF) SELECT * FROM customer_spendin
 CREATE INDEX bench_orders_completed
     ON orders (customer_id, order_date)
     INCLUDE (total_amount)
-    WHERE lower(btrim(status)) IN ('completed', 'complete');
+    WHERE public.is_sale_status(status);
 VACUUM ANALYZE orders;
 
 \echo '==== D. Set-based report with a partial covering index: 5 runs'

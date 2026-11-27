@@ -11,6 +11,8 @@
 -- not be added together as a number of distinct bad records.
 -- ============================================================
 
+\set ON_ERROR_STOP on
+
 BEGIN;
 
 -- Dropped and recreated so the script can be re-run, including

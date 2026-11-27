@@ -1,3 +1,4 @@
 # Python dependencies for race_test.py (course-supplied) and
-# scripts/flash_sale_benchmark.py. Tested with Python 3.15.2.
+# scripts/flash_sale_benchmark.py. Tested with CPython 3.15.2, the version
+# recorded in .python-version; other versions were not tested.
 psycopg2-binary==2.9.13
