@@ -44,8 +44,6 @@ Every result in this repository's documentation comes from one of the runs below
 | Roll-up timing and index use | 3.7-6.0 ms; neither former index used | [rollup_benchmark](evidence/rollup_benchmark_2026-11-27.txt) |
 | Clean-up after all race and flash-sale runs | No fixture products left; no `unlogged_update` rows; orders, order items and log back to their loaded counts | [flash_sale_400_orders](evidence/flash_sale_400_orders_2026-11-27.txt) |
 
-An earlier run of the course race test, against the previous version of `place_order()` on the original lab database, also passed (flash-sale test 6.95 s): [race_test_2026-11-27](evidence/race_test_2026-11-27.txt).
-
 ## What is not verified
 
 - **Production load.** All timings are from one laptop. The flash-sale result depends on the application sharing a small pool of connections (see technical decisions, section 2), which was not tested.

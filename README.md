@@ -49,7 +49,6 @@ Measured on a laptop against a fresh load of the course data (159,384 orders, 40
 |   |-- evidence/
 |       |-- fresh_load_verification_2026-11-27.txt
 |       |-- race_test_final_code_2026-11-27.txt
-|       |-- race_test_2026-11-27.txt
 |       |-- flash_sale_400_orders_2026-11-27.txt
 |       |-- report_benchmark_2026-11-27.txt
 |       |-- rollup_benchmark_2026-11-27.txt
