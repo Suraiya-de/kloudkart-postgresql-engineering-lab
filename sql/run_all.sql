@@ -13,12 +13,17 @@
 --
 --     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/run_all.sql
 --
--- Stage order follows the engagement: diagnose the untouched
--- data first, then deploy the solutions, then verify them.
+-- Stage order follows the engagement: define the shared business
+-- rules, diagnose the untouched data, deploy the solutions, then
+-- verify them. Each script also stops on its first error when run
+-- on its own, but must be run in this order.
 -- ============================================================
 
 \set ON_ERROR_STOP on
 \timing on
+
+\echo '== 0. Shared business rules (defines functions only)'
+\ir solutions/00_business_rules.sql
 
 \echo '== 1. Diagnosis (read-only, on the untouched load)'
 \ir diagnostics/integrity_checks.sql
