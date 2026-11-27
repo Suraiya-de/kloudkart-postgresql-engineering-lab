@@ -1,17 +1,20 @@
-
 -- ============================================================
 -- Kloud Kart: Requirement 1
--- Safe order placement under concurrent requests
+-- Concurrency-safe order placement
 --
--- Creates automatic ID sequences and the place_order function.
--- Run this setup before executing the race test.
+-- Input:    the course schema and data, loaded fresh.
+-- Produces: ID sequences for orders, order_items and inventory_log;
+--           a non-negative stock constraint for new writes;
+--           public.place_order(bigint, bigint, integer).
+-- Asserts:  race_test.py passes unmodified (see
+--           docs/validation_evidence.md).
 -- ============================================================
 
 BEGIN;
 
 -- ------------------------------------------------------------
--- 1. Create sequences for tables that currently have no
---    automatic ID generators.
+-- 1. ID sequences.
+--    The supplied tables have primary keys but no generators.
 -- ------------------------------------------------------------
 
 CREATE SEQUENCE IF NOT EXISTS public.orders_order_id_seq
@@ -22,12 +25,6 @@ CREATE SEQUENCE IF NOT EXISTS public.order_items_order_item_id_seq
 
 CREATE SEQUENCE IF NOT EXISTS public.inventory_log_log_id_seq
     AS integer;
-
-
--- ------------------------------------------------------------
--- 2. Attach each sequence to its table's ID column.
---    New inserts can now generate IDs automatically.
--- ------------------------------------------------------------
 
 ALTER TABLE public.orders
     ALTER COLUMN order_id
@@ -41,8 +38,6 @@ ALTER TABLE public.inventory_log
     ALTER COLUMN log_id
     SET DEFAULT nextval('public.inventory_log_log_id_seq');
 
-
--- Make the sequences belong to their respective columns.
 ALTER SEQUENCE public.orders_order_id_seq
     OWNED BY public.orders.order_id;
 
@@ -52,12 +47,7 @@ ALTER SEQUENCE public.order_items_order_item_id_seq
 ALTER SEQUENCE public.inventory_log_log_id_seq
     OWNED BY public.inventory_log.log_id;
 
-
--- ------------------------------------------------------------
--- 3. Initialise each sequence beyond the existing highest ID.
---    The next generated ID will be MAX(existing ID) + 1.
--- ------------------------------------------------------------
-
+-- Start each sequence after the highest existing ID.
 SELECT setval(
     'public.orders_order_id_seq',
     COALESCE(MAX(order_id), 1),
@@ -79,9 +69,23 @@ SELECT setval(
 )
 FROM public.inventory_log;
 
+-- ------------------------------------------------------------
+-- 2. Backstop: stock can never be written below zero.
+--    NOT VALID enforces the rule on every new insert or update
+--    without rejecting the 14 historical negative balances,
+--    which are evidence of past overselling and must be
+--    reconciled, not overwritten (see the data diagnosis).
+-- ------------------------------------------------------------
+
+ALTER TABLE public.products
+    DROP CONSTRAINT IF EXISTS products_stock_non_negative;
+
+ALTER TABLE public.products
+    ADD CONSTRAINT products_stock_non_negative
+    CHECK (stock_quantity >= 0) NOT VALID;
 
 -- ------------------------------------------------------------
--- 4. Create the order-placement function.
+-- 3. Order placement.
 -- ------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION public.place_order(
@@ -98,55 +102,54 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     v_price numeric(12,2);
-    v_order_id integer;
+    v_order_id bigint;
+    v_stock_updated boolean;
 BEGIN
-
-    -- Validate the requested quantity.
     IF p_quantity IS NULL OR p_quantity <= 0 THEN
-        RETURN QUERY
-        SELECT FALSE, NULL::bigint, 'Invalid quantity';
+        RETURN QUERY SELECT FALSE, NULL::bigint, 'Invalid quantity';
         RETURN;
     END IF;
 
-
-    -- Confirm that the customer exists.
     IF NOT EXISTS (
         SELECT 1
         FROM public.customers c
         WHERE c.customer_id = p_customer_id
     ) THEN
-        RETURN QUERY
-        SELECT FALSE, NULL::bigint, 'Customer not found';
+        RETURN QUERY SELECT FALSE, NULL::bigint, 'Customer not found';
         RETURN;
     END IF;
 
-
-    -- Confirm that the product exists and has a price.
     SELECT p.price
     INTO v_price
     FROM public.products p
     WHERE p.product_id = p_product_id;
 
     IF NOT FOUND THEN
-        RETURN QUERY
-        SELECT FALSE, NULL::bigint, 'Product not found';
+        RETURN QUERY SELECT FALSE, NULL::bigint, 'Product not found';
         RETURN;
     END IF;
 
     IF v_price IS NULL THEN
-        RETURN QUERY
-        SELECT FALSE, NULL::bigint, 'Product price is missing';
+        RETURN QUERY SELECT FALSE, NULL::bigint, 'Product price is missing';
         RETURN;
     END IF;
 
-
     -- --------------------------------------------------------
-    -- CRITICAL CONCURRENCY CONTROL
+    -- Concurrency control.
     --
-    -- Deduct stock only if sufficient stock remains.
-    -- PostgreSQL locks the affected product row while updating.
-    -- Competing requests for this product must wait their turn.
+    -- The stock check and the deduction are one statement. The
+    -- UPDATE takes the product's row lock; a competing buyer
+    -- waits for it, then PostgreSQL re-evaluates the WHERE
+    -- clause against the committed stock (READ COMMITTED
+    -- re-check). The loser therefore matches no row and is told
+    -- "out of stock" instead of receiving an error.
+    --
+    -- The transaction-local flag tells the audit trigger
+    -- (solution 04) that this function writes its own
+    -- inventory_log entry.
     -- --------------------------------------------------------
+
+    PERFORM set_config('kloudkart.stock_change_logged', 'on', true);
 
     UPDATE public.products
     SET stock_quantity = stock_quantity - p_quantity
@@ -154,19 +157,14 @@ BEGIN
       AND stock_quantity >= p_quantity
     RETURNING price INTO v_price;
 
+    v_stock_updated := FOUND;
 
-    -- If no row was updated, there is not enough stock.
-    IF NOT FOUND THEN
-        RETURN QUERY
-        SELECT FALSE, NULL::bigint, 'Out of stock';
+    PERFORM set_config('kloudkart.stock_change_logged', 'off', true);
+
+    IF NOT v_stock_updated THEN
+        RETURN QUERY SELECT FALSE, NULL::bigint, 'Out of stock';
         RETURN;
     END IF;
-
-
-    -- --------------------------------------------------------
-    -- Create the order.
-    -- The ID is generated by the orders sequence.
-    -- --------------------------------------------------------
 
     INSERT INTO public.orders (
         customer_id,
@@ -182,12 +180,6 @@ BEGIN
     )
     RETURNING orders.order_id INTO v_order_id;
 
-
-    -- --------------------------------------------------------
-    -- Create the order item.
-    -- The ID is generated by the order_items sequence.
-    -- --------------------------------------------------------
-
     INSERT INTO public.order_items (
         order_id,
         product_id,
@@ -201,12 +193,7 @@ BEGIN
         v_price
     );
 
-
-    -- --------------------------------------------------------
-    -- Record the stock movement for audit purposes.
-    -- A negative change_qty represents stock leaving inventory.
-    -- --------------------------------------------------------
-
+    -- A negative change_qty records stock leaving inventory.
     INSERT INTO public.inventory_log (
         product_id,
         change_qty,
@@ -222,16 +209,7 @@ BEGIN
         'Stock deducted for order ' || v_order_id
     );
 
-
-    -- Return a successful result.
-    RETURN QUERY
-    SELECT
-        TRUE,
-        v_order_id::bigint,
-        'Order placed successfully';
-
-    RETURN;
-
+    RETURN QUERY SELECT TRUE, v_order_id, 'Order placed successfully';
 END;
 $$;
 
