@@ -34,6 +34,12 @@ Measured on a laptop against a fresh load of the course data (159,384 orders, 40
 |-- .gitattributes                    Line-ending normalisation
 |-- .gitignore                        Keeps data, credentials and dumps out of Git
 |-- requirements.txt                  Python dependency for the race test and benchmark
+|-- course/                           Course files, unmodified (see course/README.md)
+|   |-- README.md                     Provenance, SHA-256 hashes, where the CSVs go
+|   |-- schema.sql                    Kloud Kart's schema as supplied
+|   |-- load.sql                      Loads the CSVs from course/data/
+|   |-- race_test.py                  The concurrency test place_order() must pass
+|   |-- data/                         The six CSVs; git-ignored, not committed
 |-- docs/
 |   |-- business_memo.md
 |   |-- technical_decisions.md
@@ -65,7 +71,7 @@ Measured on a laptop against a fresh load of the course data (159,384 orders, 40
         |-- report_benchmark.sql      Before-and-after report timings
 ```
 
-The course data bundle (`schema.sql`, `load.sql`, the CSV files and `race_test.py`) is not included; it contains customer records. Obtain it from the course materials.
+The course's `schema.sql`, `load.sql` and `race_test.py` are in `course/`, byte-for-byte as supplied. The six CSV files are not committed because they contain customer records; copy them from the course bundle into `course/data/`.
 
 ## Running the project
 
@@ -91,27 +97,29 @@ docker compose up -d
 
 ### 2. Load the course data
 
-The course `schema.sql` drops and recreates the tables. Run it only on a database you intend to reset.
+Copy the six CSV files from the course bundle into `course/data/`, then load them. `schema.sql` drops and recreates the tables, so run it only on a database you intend to reset.
 
-macOS or Linux (replace the bundle path):
+macOS or Linux (replace the path with the bundle's `data` folder):
 
 ```bash
-BUNDLE=~/Downloads/M03_Resources
-docker compose cp "$BUNDLE/." db:/tmp/bundle
-docker compose exec -w /tmp/bundle db psql -U postgres -d kloudkart_lab -v ON_ERROR_STOP=1 -f schema.sql
-docker compose exec -w /tmp/bundle db psql -U postgres -d kloudkart_lab -v ON_ERROR_STOP=1 -f load.sql
+mkdir -p course/data
+cp /path/to/course-bundle/data/*.csv course/data/
+docker compose cp course/. db:/tmp/course
+docker compose exec -w /tmp/course db psql -U postgres -d kloudkart_lab -v ON_ERROR_STOP=1 -f schema.sql
+docker compose exec -w /tmp/course db psql -U postgres -d kloudkart_lab -v ON_ERROR_STOP=1 -f load.sql
 ```
 
 Windows PowerShell:
 
 ```powershell
-$bundle = "C:\path\to\M03_Resources"
-docker compose cp "$bundle\." db:/tmp/bundle
-docker compose exec -w /tmp/bundle db psql -U postgres -d kloudkart_lab -v ON_ERROR_STOP=1 -f schema.sql
-docker compose exec -w /tmp/bundle db psql -U postgres -d kloudkart_lab -v ON_ERROR_STOP=1 -f load.sql
+New-Item -ItemType Directory -Force course\data
+Copy-Item "C:\path\to\course-bundle\data\*.csv" course\data\
+docker compose cp course/. db:/tmp/course
+docker compose exec -w /tmp/course db psql -U postgres -d kloudkart_lab -v ON_ERROR_STOP=1 -f schema.sql
+docker compose exec -w /tmp/course db psql -U postgres -d kloudkart_lab -v ON_ERROR_STOP=1 -f load.sql
 ```
 
-In Git Bash on Windows, set `MSYS_NO_PATHCONV=1` first so `/tmp/bundle` is not rewritten as a Windows path.
+In Git Bash on Windows, set `MSYS_NO_PATHCONV=1` first so `/tmp/course` is not rewritten as a Windows path.
 
 ### 3. Diagnose, deploy and verify
 
@@ -132,7 +140,7 @@ macOS or Linux:
 python3 -m pip install -r requirements.txt
 set -a; . ./.env; set +a
 export DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5433}/kloudkart_lab"
-python3 "$BUNDLE/race_test.py"
+python3 course/race_test.py
 python3 scripts/flash_sale_benchmark.py
 ```
 
@@ -141,7 +149,7 @@ Windows PowerShell:
 ```powershell
 py -m pip install -r requirements.txt
 $env:DATABASE_URL = "postgresql://postgres:<your-password>@127.0.0.1:5433/kloudkart_lab"
-py "$bundle\race_test.py"
+py course\race_test.py
 py scripts\flash_sale_benchmark.py
 ```
 
@@ -184,4 +192,4 @@ ORDER BY severity_rank, violation_count DESC;
 
 ## Data handling
 
-The course data contains customer names, emails and phone numbers. It is excluded by `.gitignore` and must not be committed, along with `.env`, database dumps and any other credentials. The evidence files contain counts, timings and query plans only.
+The course CSV files contain customer names, emails and phone numbers. They live in `course/data/`, which `.gitignore` excludes, and must not be committed, along with `.env`, database dumps and any other credentials. The evidence files contain counts, timings and query plans only.
