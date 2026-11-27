@@ -33,6 +33,7 @@ Measured on a laptop against a fresh load of the course data (159,384 orders, 40
 |-- .env.example                      Template for the local database password and port
 |-- .gitattributes                    Line-ending normalisation
 |-- .gitignore                        Keeps data, credentials and dumps out of Git
+|-- .python-version                   Python version the tests were run with
 |-- requirements.txt                  Python dependency for the race test and benchmark
 |-- course/                           Course files, unmodified (see course/README.md)
 |   |-- README.md                     Provenance, SHA-256 hashes, where the CSVs go
@@ -60,6 +61,7 @@ Measured on a laptop against a fresh load of the course data (159,384 orders, 40
     |   |-- integrity_checks.sql      Diagnosis queries (read-only)
     |   |-- data_quality_monitoring.sql
     |-- solutions/
+    |   |-- 00_business_rules.sql     Shared definition of a sale
     |   |-- 01_place_order.sql
     |   |-- 02_customer_spending_report.sql
     |   |-- 03_low_stock_category_rollup.sql
@@ -74,7 +76,7 @@ The course's `schema.sql`, `load.sql` and `race_test.py` are in `course/`, byte-
 
 ## Running the project
 
-Tested with Docker Desktop, PostgreSQL 18.7 and Python 3.15.2. The commands use `psql` inside the database container, so no local PostgreSQL client is needed.
+Tested with Docker Desktop, PostgreSQL 18.7 and CPython 3.15.2 (`python --version` on the test machine; recorded in `.python-version`). Other Python versions were not tested. The commands use `psql` inside the database container, so no local PostgreSQL client is needed.
 
 ### 1. Start PostgreSQL
 
@@ -167,6 +169,8 @@ SELECT * FROM customer_spending_top100;
 ```
 
 Both return one row per customer per month, so `total_spent` and `order_count` repeat on each of a customer's 12 rows. Sum `monthly_spend`, or take one month's rows, rather than summing `total_spent`.
+
+Every customer always has exactly 12 rows. A month with no completed orders shows `monthly_spend` 0 and carries the running total forward; a customer with no completed orders at all up to the report date has 12 rows of zeros and is ranked last. Run as of today on the course extract, which ends on 31 August 2026, the months after August are almost entirely zero; pass `'2026-08-31 23:59:59'` to see the extract's last 12 months.
 
 Low stock by category, with five units or fewer counted as low:
 
