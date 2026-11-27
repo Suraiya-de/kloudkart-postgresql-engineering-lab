@@ -21,6 +21,25 @@ The extract runs from 2 August 2025 to 31 August 2026. Twenty-four orders are da
 
 Reading `schema.sql` before the data shows what can go wrong. There are primary keys and nothing else: no foreign keys, no `NOT NULL`, no `CHECK` constraints, no unique email, and `status` and `reason` are free text. Every relationship, every quantity and every status is enforced only by whichever application wrote it. Each finding below is something this schema allowed.
 
+### NULLs the solution tolerates
+
+Because every column is nullable, the solution has to state which NULLs it accepts and what it does with them. On the fresh load only four columns contain any:
+
+| Column | NULL rows | Meaning | How the solution treats it |
+|---|---:|---|---|
+| `categories.parent_id` | 7 | A top-level category | The roll-up stops walking there. Legitimate. |
+| `products.category_id` | 37 | Product never assigned a category | Reported on the roll-up's "no category assigned" line; orders still work (finding 3.11). |
+| `order_items.unit_price` | 148 | Line with no recorded price | No effect on the report, which uses order totals; flagged by `order_total_mismatch` (finding 3.3). |
+| `inventory_log.note` | 281,927 | No free-text note | Legitimate: notes are optional history. New movements always carry one, because `record_inventory_movement()` requires it and `place_order()` writes the order number. |
+
+No other column has a NULL in this extract. If one appears later, the solution handles it as follows rather than guessing a value:
+
+| Column | Behaviour |
+|---|---|
+| `orders.status`, `orders.order_date`, `orders.total_amount`, `orders.customer_id` | The order is left out of the report; a NULL status is also counted by `nonstandard_order_statuses`. |
+| `products.price` | `place_order()` refuses with "Product price is missing". |
+| `products.stock_quantity` | `place_order()` cannot match the stock condition and refuses; `record_inventory_movement()` refuses with "Product stock quantity is NULL"; the roll-up counts the product but not as low stock. |
+
 ### How each finding is costed
 
 Each fault is costed against a figure Nana or Adwoa actually uses: the Monday report's total spend and top-100 list, units of stock, and the value of sales that cannot be traced. The report figures are measured as of 31 August 2026, the end of the extract, and include only completed orders from known customers (total spend 339,176,836.88 across 111,190 orders).
