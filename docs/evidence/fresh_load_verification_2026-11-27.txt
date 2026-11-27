@@ -1,0 +1,282 @@
+Kloud Kart - Fresh-load verification
+====================================
+
+Date: 2026-11-27
+Environment: Windows 11 laptop, Docker Desktop; PostgreSQL 18.7 container (8 vCPU, 16 GB visible),
+shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC.
+Database: kloudkart_audit (a scratch database), created empty and loaded with the course schema.sql and load.sql
+(categories 94, products 4,023, customers 40,420, orders 159,384, order_items 336,559, inventory_log 282,352).
+
+Command: psql -v ON_ERROR_STOP=1 -f sql/run_all.sql
+Result: exit code 0; all 13 verification assertions passed.
+The script was then run a second time on the same database: exit code 0,
+all 13 assertions passed again, so it is safe to re-run.
+
+Load output (tail):
+Time: 674.656 ms
+  table_name   | count  
+---------------+--------
+ categories    |     94
+ customers     |  40420
+ inventory_log | 282352
+ order_items   | 336559
+ orders        | 159384
+ products      |   4023
+(6 rows)
+
+Time: 38.539 ms
+
+run_all.sql output (first run):
+Timing is on.
+== 1. Diagnosis (read-only, on the untouched load)
+Pager usage is off.
+               check_name                | affected_rows | distinct_keys | recorded_value 
+-----------------------------------------+---------------+---------------+----------------
+ stock_ledger_mismatch                   |           144 |           144 |           2553
+ negative_stock                          |            14 |            14 |            -27
+ order_total_mismatch                    |          2426 |          2426 |     5291591.64
+ complete_status_excluded_by_exact_match |         22285 |         17199 |    68086741.07
+ orphan_orders                           |           210 |           190 |      665180.61
+ orphan_order_items_orders               |           692 |           689 |      826327.80
+ future_dated_orders                     |            15 |            15 |       40871.60
+ implausible_order_quantities            |             6 |             6 |          23994
+ duplicate_order_lines                   |           578 |           577 |      941247.62
+ duplicate_customer_emails               |          1068 |           533 |               
+ orphan_inventory_logs                   |           120 |           111 |           -120
+ products_without_category               |            37 |            37 |           3112
+ categories_in_parent_cycles             |             2 |             2 |               
+ orphan_categories                       |             1 |             1 |               
+ orphan_products                         |             0 |             0 |               
+ orphan_order_items_products             |             0 |             0 |               
+ negative_product_prices                 |             0 |             0 |               
+ invalid_order_quantities                |             0 |             0 |               
+(18 rows)
+
+Time: 1187.415 ms (00:01.187)
+ normalised_status | raw_spellings | orders | recorded_value | average_order_value | first_order | last_order 
+-------------------+---------------+--------+----------------+---------------------+-------------+------------
+ completed         |             4 |  89066 |   271522624.96 |             3048.56 | 2025-08-02  | 2027-08-20
+ complete          |             1 |  22285 |    68086741.07 |             3055.27 | 2025-08-02  | 2027-05-11
+ pending           |             2 |  16009 |    48499632.57 |             3029.52 | 2025-08-02  | 2026-10-15
+ shipped           |             2 |  12848 |    40956904.87 |             3187.80 | 2025-08-02  | 2027-08-12
+ cancelled         |             3 |   9488 |    29187812.69 |             3076.29 | 2025-08-02  | 2027-04-03
+ refunded          |             2 |   6479 |    19834083.11 |             3061.29 | 2025-08-02  | 2026-11-26
+ canceled          |             1 |   3209 |     8976160.54 |             2797.18 | 2025-08-03  | 2026-08-31
+(7 rows)
+
+Time: 191.020 ms
+                      direction                      | products | net_units | smallest_gap | largest_gap 
+-----------------------------------------------------+----------+-----------+--------------+-------------
+ stock above ledger (units arrived without a record) |       22 |        89 |            3 |           6
+ stock below ledger (units left without a record)    |      122 |     -2464 |          -56 |          -3
+(2 rows)
+
+Time: 42.781 ms
+        direction         | orders | net_difference 
+--------------------------+--------+----------------
+ a line has no unit price |    147 |     -730592.36
+ total above lines        |    938 |      545448.22
+ total below lines        |   1341 |    -3215549.76
+(3 rows)
+
+Time: 436.896 ms
+ report_orders | report_total | total_without_complete | exact_match_orders | exact_match_total 
+---------------+--------------+------------------------+--------------------+-------------------
+        111190 | 339176836.88 |           271181571.44 |              22044 |       66404223.67
+(1 row)
+
+Time: 115.747 ms
+ top100_customers_replaced 
+---------------------------
+                        24
+(1 row)
+
+Time: 272.245 ms
+ unattributable_sales | unattributable_value 
+----------------------+----------------------
+                  144 |            388780.89
+(1 row)
+
+Time: 106.022 ms
+ mismatches_in_report | report_change_if_lines_used | explained_by_duplicate_line 
+----------------------+-----------------------------+-----------------------------
+                 1717 |                 -1267831.33 |                         526
+(1 row)
+
+Time: 1337.614 ms (00:01.338)
+ future_completed_orders | future_completed_value | first_future_date | orders_after_extract_end 
+-------------------------+------------------------+-------------------+--------------------------
+                      12 |               35600.61 | 2026-12-04        |                       24
+(1 row)
+
+Time: 36.976 ms
+ split_spend | would_enter_top100_if_merged | shared_emails_with_different_cities 
+-------------+------------------------------+-------------------------------------
+  8818438.73 |                            1 |                                 206
+(1 row)
+
+Time: 417.339 ms
+ ledger_gap_value | gaps_at_low_stock | shows_stock_ledger_says_none | oversold_value 
+------------------+-------------------+------------------------------+----------------
+       3865699.34 |                49 |                            7 |       20627.76
+(1 row)
+
+Time: 40.515 ms
+ lines_priced_differently_today | customers_without_orders | ledger_sale_units | order_line_units | order_line_units_not_cancelled 
+--------------------------------+--------------------------+-------------------+------------------+--------------------------------
+                           4116 |                      768 |            412645 |           554451 |                         500656
+(1 row)
+
+Time: 199.466 ms
+== 2. Order placement
+BEGIN
+Time: 0.102 ms
+CREATE SEQUENCE
+Time: 1.112 ms
+CREATE SEQUENCE
+Time: 0.390 ms
+CREATE SEQUENCE
+Time: 0.545 ms
+ALTER TABLE
+Time: 0.739 ms
+ALTER TABLE
+Time: 0.305 ms
+ALTER TABLE
+Time: 0.360 ms
+ALTER SEQUENCE
+Time: 0.239 ms
+ALTER SEQUENCE
+Time: 0.281 ms
+ALTER SEQUENCE
+Time: 0.232 ms
+ setval 
+--------
+ 659384
+(1 row)
+
+Time: 8.182 ms
+ setval  
+---------
+ 1236559
+(1 row)
+
+Time: 18.182 ms
+ setval 
+--------
+ 982487
+(1 row)
+
+Time: 17.490 ms
+psql:/tmp/repo/solutions/01_place_order.sql:81: NOTICE:  constraint "products_stock_non_negative" of relation "products" does not exist, skipping
+ALTER TABLE
+Time: 0.387 ms
+ALTER TABLE
+Time: 0.513 ms
+CREATE FUNCTION
+Time: 2.351 ms
+COMMIT
+Time: 3.042 ms
+== 3. Customer spending report
+BEGIN
+Time: 0.130 ms
+DROP VIEW
+Time: 0.195 ms
+psql:/tmp/repo/solutions/02_customer_spending_report.sql:31: NOTICE:  view "customer_spending_top100" does not exist, skipping
+DROP VIEW
+Time: 0.138 ms
+DROP INDEX
+Time: 0.144 ms
+psql:/tmp/repo/solutions/02_customer_spending_report.sql:32: NOTICE:  view "customer_spending_report" does not exist, skipping
+psql:/tmp/repo/solutions/02_customer_spending_report.sql:38: NOTICE:  index "idx_orders_completed_spending" does not exist, skipping
+CREATE FUNCTION
+Time: 1.080 ms
+CREATE VIEW
+Time: 0.750 ms
+COMMIT
+Time: 3.071 ms
+== 4. Low-stock category roll-up
+BEGIN
+Time: 0.131 ms
+psql:/tmp/repo/solutions/03_low_stock_category_rollup.sql:22: NOTICE:  index "idx_categories_parent_id" does not exist, skipping
+DROP INDEX
+Time: 0.191 ms
+DROP INDEX
+Time: 0.164 ms
+psql:/tmp/repo/solutions/03_low_stock_category_rollup.sql:23: NOTICE:  index "idx_products_category_id" does not exist, skipping
+CREATE FUNCTION
+Time: 0.721 ms
+COMMIT
+Time: 3.069 ms
+== 5. Auditable inventory movements
+BEGIN
+Time: 0.124 ms
+CREATE FUNCTION
+Time: 0.599 ms
+CREATE FUNCTION
+Time: 0.229 ms
+DROP TRIGGER
+Time: 0.182 ms
+psql:/tmp/repo/solutions/04_auditable_inventory_movements.sql:184: NOTICE:  trigger "trg_products_stock_audit" for relation "public.products" does not exist, skipping
+CREATE TRIGGER
+Time: 0.751 ms
+COMMIT
+Time: 3.076 ms
+== 6. Data-quality monitoring view
+BEGIN
+Time: 0.169 ms
+psql:/tmp/repo/diagnostics/data_quality_monitoring.sql:18: NOTICE:  view "data_quality_monitoring" does not exist, skipping
+DROP VIEW
+Time: 0.156 ms
+CREATE VIEW
+Time: 3.459 ms
+COMMIT
+Time: 3.154 ms
+== 7. Verification
+Pager usage is off.
+psql:/tmp/repo/tests/verify_solution.sql:81: NOTICE:  PASS report: 485040 rows = 12 months x 40420 customers
+psql:/tmp/repo/tests/verify_solution.sql:81: NOTICE:  PASS report: every final running_total equals total_spent
+psql:/tmp/repo/tests/verify_solution.sql:81: NOTICE:  PASS report: total spend 339176836.88 matches an independent sum
+psql:/tmp/repo/tests/verify_solution.sql:81: NOTICE:  PASS report: top-100 view returns 100 customers x 12 months
+DO
+Time: 1725.122 ms (00:01.725)
+psql:/tmp/repo/tests/verify_solution.sql:161: NOTICE:  PASS roll-up: roots + uncategorised + cycle members = 4023 products
+psql:/tmp/repo/tests/verify_solution.sql:161: NOTICE:  PASS roll-up: Electronics (1238 products) matches a top-down walk
+psql:/tmp/repo/tests/verify_solution.sql:161: NOTICE:  PASS roll-up: 2 cycle and 1 missing-parent categories flagged, query terminated
+DO
+Time: 14.887 ms
+BEGIN
+Time: 0.112 ms
+psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS place_order: oversized request refused with "Out of stock"
+psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS place_order: order 659385 placed, exactly one movement logged
+psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS record_inventory_movement: restock logged once
+psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS record_inventory_movement: refused movement left stock and log unchanged
+psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS audit trigger: direct UPDATE recorded as unlogged_update
+DO
+Time: 68.203 ms
+ROLLBACK
+Time: 0.105 ms
+psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS constraint: negative stock rejected
+ severity |           check_name            | violation_count |                                   description                                    
+----------+---------------------------------+-----------------+----------------------------------------------------------------------------------
+ HIGH     | order_total_mismatch            |            2426 | Orders whose total differs from the sum of their order lines
+ HIGH     | orphan_order_items_orders       |             692 | Order items referencing missing orders
+ HIGH     | orphan_orders                   |             210 | Orders referencing missing customers
+ HIGH     | stock_ledger_mismatch           |             144 | Products whose stock differs from the sum of their inventory movements
+ HIGH     | negative_stock                  |              14 | Products with stock below zero (sold units that did not exist)
+ HIGH     | unlogged_stock_updates          |               0 | Stock changes made outside the inventory functions (caught by the audit trigger)
+ MEDIUM   | nonstandard_order_statuses      |          116394 | Orders whose status is not exactly one of the standard lower-case values
+ MEDIUM   | duplicate_order_lines           |             578 | Extra order lines repeating the same order, product, quantity and price
+ MEDIUM   | duplicate_customer_emails       |             533 | Email addresses shared by more than one customer record
+ MEDIUM   | orphan_inventory_logs           |             120 | Inventory movements referencing missing products
+ MEDIUM   | products_without_category       |              37 | Products with no category, reported separately by the low-stock roll-up
+ MEDIUM   | future_dated_orders             |              15 | Orders dated after now; they will enter reports silently on that date
+ MEDIUM   | implausible_order_quantities    |               6 | Order lines with quantity of 100 or more (999 and 9999 are keying errors)
+ MEDIUM   | categories_affected_by_cycles   |               2 | Categories whose parent chain loops back on itself
+ LOW      | categories_with_missing_parents |               1 | Categories whose parent category does not exist
+ LOW      | invalid_order_quantities        |               0 | Order items with zero or negative quantities
+ LOW      | negative_product_prices         |               0 | Products with prices below zero
+ LOW      | orphan_order_items_products     |               0 | Order items referencing missing products
+ INFO     | zero_stock                      |             577 | Products at zero stock; an availability signal, not a data defect
+(19 rows)
+
+Time: 1307.618 ms (00:01.308)

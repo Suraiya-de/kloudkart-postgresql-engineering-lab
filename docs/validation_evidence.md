@@ -1,176 +1,63 @@
 # Validation Evidence
 
-## Evidence status
+Every result in this repository's documentation comes from one of the runs below. Raw output is kept in [`docs/evidence/`](evidence/), unedited apart from a header describing the run.
 
-Audit date: 2026-11-27.
+## Environment
 
-No database connection or database test was run for this review. `psql` is not installed in the inspected workspace. The tracked repository contains no course schema, training dataset, `race_test.py`, query-plan output, benchmark log, or test log. The current target server's PostgreSQL version is therefore unknown. The optional Compose configuration specifies PostgreSQL 18, but that does not establish the version of the course server.
+| Item | Value |
+|---|---|
+| Date | 27 November 2026 |
+| Machine | Windows 11 laptop, Docker Desktop |
+| PostgreSQL | 18.7 in a container (8 vCPU, 16 GB visible) |
+| Settings | `shared_buffers` 128MB, `work_mem` 4MB, `max_connections` 500, time zone UTC |
+| Python | 3.15.2 with `psycopg2-binary` 2.9.13 |
+| Database | `kloudkart_audit`, a scratch database created empty and loaded with the course `schema.sql` and `load.sql`; the README's Compose setup names it `kloudkart_lab` |
 
-The repository's earlier README and technical-decision text recorded successful tests and plan inspection. Those statements are historical claims only: the original commands, conditions, output, duration and plans are unavailable here, so this document does not treat them as verified results.
+| Table | Rows after load |
+|---|---:|
+| categories | 94 |
+| products | 4,023 |
+| customers | 40,420 |
+| orders | 159,384 |
+| order_items | 336,559 |
+| inventory_log | 282,352 |
 
-| Item | Evidence available in this repository | Status |
+## Results
+
+| Check | Result | Evidence |
 |---|---|---|
-| PostgreSQL version | Compose image is `postgres:18`; no result from the course server | Course server not verified |
-| 400-buyer, 50-unit concurrency test | Previously claimed in `technical_decisions.md`; no script or output tracked | Not independently verified |
-| 400 orders in 10 seconds | No timed result or workload log tracked | Not verified |
-| Spending report row count | No database result tracked | Not measured |
-| Monitoring check count | SQL source defines 12 `UNION ALL` checks | 12 defined statically; runtime view not executed here |
-| Report `EXPLAIN ANALYZE` and before/after timings | No plans or timing output tracked | Not verified |
-| Recursive cycle/missing-parent test | SQL implements path-based detection; no execution output tracked | Not run here |
-| Inventory rollback test | Function source updates stock and inserts a log in one call; no failure-injection result tracked | Not verified |
-| Compose health check | Configured in `compose.yaml`; no health output tracked | Not verified |
+| Diagnosis queries on the untouched load | All figures in the data diagnosis reproduced | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| `sql/run_all.sql` from a fresh load | Exit code 0 on the first run and on a re-run; every script deployed without error | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Report: 12 rows per customer | 485,040 rows for 40,420 customers | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Report: final running total equals total spent | True for every customer | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Report: total against an independent sum | 339,176,836.88 both ways | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Roll-up: Electronics against an independent walk | 1,238 products both ways | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Roll-up: coverage | Roots + uncategorised + cycle members = 4,023 products | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Oversized order | Refused with "Out of stock"; stock unchanged | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Restock | One log row, no duplicate from the trigger | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Refused movement | Stock and log unchanged | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Direct stock update | Logged as `unlogged_update` | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Write of negative stock | Rejected by the check constraint | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Course `race_test.py`, unmodified, final code | PASSED 3/3; flash-sale test 4.30 s, 4.16 s, 4.65 s | [race_test_final_code](evidence/race_test_final_code_2026-11-27.txt) |
+| 400 orders on one product | 400 sold, 0 errors, 400 log rows, stock 0; 3.25-3.36 s over 3 runs, timed from release of all 400 connections | [flash_sale_400_orders](evidence/flash_sale_400_orders_2026-11-27.txt) |
+| Report before and after | About 3 hours (extrapolated) to 1.38 s | [report_benchmark](evidence/report_benchmark_2026-11-27.txt) |
+| Roll-up timing and index use | 3.7-6.0 ms; neither former index used | [rollup_benchmark](evidence/rollup_benchmark_2026-11-27.txt) |
+| Clean-up after all race and flash-sale runs | No fixture products left; no `unlogged_update` rows; orders, order items and log back to their loaded counts | [flash_sale_400_orders](evidence/flash_sale_400_orders_2026-11-27.txt) |
 
-The `zero_stock` row is an INFO availability signal, not a data defect by itself. It is retained as a useful operational indicator; the view still defines 12 checks.
+An earlier run of the course race test, against the previous version of `place_order()` on the original lab database, also passed (flash-sale test 6.95 s): [race_test_2026-11-27](evidence/race_test_2026-11-27.txt).
 
-The figures 210 affected orders and 190 distinct missing customer IDs are the verified figures supplied for this submission review. Other data findings in the diagnosis (including 14 negative-stock products, cycle members 9001/9002 and 37 products with NULL category IDs) are explicitly labeled as previously observed and require fresh-load verification.
+## What is not verified
 
-## Connect to the existing course database
+- **Production load.** All timings are from one laptop. The flash-sale result depends on the application sharing a small pool of connections (see technical decisions, section 2), which was not tested.
+- **Adwoa's original query.** The "before" timing is a reconstruction of the usual per-customer report, run on 100 customers and extrapolated, not her actual query run in full.
+- **The business meaning of `complete`.** The data supports treating it as completed; the business has not confirmed it.
 
-Use the database name and user supplied with the course resources. These PowerShell variables target the existing server on localhost port 5432; PostgreSQL prompts for a password if needed.
+## Reproducing the results
 
-```powershell
-$env:PGHOST = "127.0.0.1"
-$env:PGPORT = "5432"
-$env:PGDATABASE = "<course-provided-database>"
-$env:PGUSER = "<course-provided-user>"
-psql -X -v ON_ERROR_STOP=1 -c "SELECT current_database(), current_setting('server_version');"
+Follow [Running the project](../README.md#running-the-project) in the README: steps 2 to 4 load the data, run `sql/run_all.sql` and run both concurrency tests, on Windows, macOS or Linux. The report benchmark then runs the same way:
+
+```bash
+docker compose exec db psql -U postgres -d kloudkart_lab -f /tmp/sql/benchmarks/report_benchmark.sql
 ```
 
-Obtain the authorized schema, dataset and race-test script from the course assignment materials. They are not tracked here. The schema is described as containing destructive `DROP TABLE` statements; only load it into a fresh database when the course explicitly authorizes that target. Do not reinitialize a populated assignment database. The data file format and the race-test command-line options cannot be specified without the external files.
-
-## Repeatable report measurements
-
-Run measurements only on a disposable copy with the authorized schema/data and the customer-spending view installed. Do not drop the report index on a shared or production database. Keep the dataset, PostgreSQL settings, query, and session conditions the same for both plans.
-
-With the view and index present, capture the indexed plan:
-
-```sql
-EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY)
-SELECT * FROM public.customer_spending_report;
-```
-
-For the no-index baseline, run the same plan in a transaction and roll it back so the named index is restored:
-
-```sql
-BEGIN;
-DROP INDEX IF EXISTS public.idx_orders_completed_spending;
-EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY)
-SELECT * FROM public.customer_spending_report;
-ROLLBACK;
-```
-
-Record the complete plans, planning and execution times, buffer statistics, PostgreSQL version, and dataset row counts. Repeat the paired measurements several times on the same disposable database and report the individual runs or a stated summary method; do not infer a speedup from a plan alone.
-
-Capture actual report rows and customers with:
-
-```sql
-SELECT
-    COUNT(*) AS report_rows,
-    COUNT(DISTINCT customer_id) AS report_customers
-FROM public.customer_spending_report;
-```
-
-The current view can emit up to 13 monthly rows per selected customer (at most 1,300 rows for 100 customers); this is a structural upper bound, not an observed row count.
-
-## Repeatable concurrency and functional checks
-
-Obtain `race_test.py` and its documented dependencies/options from the course materials. Run it only against a designated disposable/test database and the test product/data it specifies: the test creates orders and changes stock. Once the invocation is known, measure wall time in PowerShell as follows, replacing the path and adding only the arguments documented by that script:
-
-```powershell
-$raceTest = "C:|path\to\course\race_test.py"
-$timer = [System.Diagnostics.Stopwatch]::StartNew()
-python $raceTest
-$exitCode = $LASTEXITCODE
-$timer.Stop()
-[pscustomobject]@{
-    ExitCode = $exitCode
-    ElapsedMilliseconds = $timer.ElapsedMilliseconds
-}
-```
-
-Preserve the script output and record request count, successful orders, rejected out-of-stock requests, final stock, and elapsed time. The `python` command above assumes the course script's default invocation; its actual arguments and connection configuration remain unknown until the file is obtained.
-
-After deploying solution 03 and the monitoring view, capture the runtime check count and total per-check violations with:
-
-```sql
-SELECT
-    COUNT(*) AS monitoring_checks,
-    SUM(violation_count) AS summed_per_check_violations
-FROM public.data_quality_monitoring;
-```
-
-The check rows overlap by design in some cases, so the violation sum is not a distinct-record count. Inspect recursive edge cases with:
-
-```sql
-SELECT
-    category_id,
-    hierarchy_cycle_detected,
-    missing_parent_detected
-FROM public.low_stock_by_category(5)
-WHERE hierarchy_cycle_detected
-   OR missing_parent_detected
-ORDER BY category_id;
-```
-
-No actual report counts, monitoring output, recursive results, concurrency duration, or inventory rollback result is available to enter here yet. Add results only after recording the genuine command/query, test conditions and output.
-
----
-
-## Runtime validation update - 2026-11-27
-
-This section supersedes the earlier audit statement that no database test had been run. The earlier audit describes the state before this runtime validation.
-
-### Verified database environment
-
-| Item | Result |
-|---|---|
-| Database | kloudkart_lab |
-| PostgreSQL | 18.7 |
-| Database user | postgres |
-| max_connections | 500 |
-| Sessions before test | 9 |
-| Categories | 94 |
-| Products | 4,023 |
-| Customers | 40,420 |
-| Orders | 159,384 |
-| Order items | 336,559 |
-| Inventory log | 282,352 |
-| Deployed order function | public.place_order(bigint,bigint,integer) |
-
-### Course concurrency test - PASSED
-
-The supplied race_test.py was executed against kloudkart_lab.
-
-| Scenario | Actual result |
-|---|---|
-| Two buyers competing for one unit, 25 rounds | 25/25 rounds passed; exactly one winner per round |
-| Flash sale, 400 concurrent buyers and 50 units | 50 sold; 350 refused; 0 errors |
-| Flash-sale duration reported by test | 6.95 seconds |
-| Request exceeding available stock | Rejected; stock untouched |
-| Inventory audit after contention | 5 sales; 5 movements recorded |
-| Python process exit code | 0 |
-| Overall result | PASSED |
-
-The 400-attempt test completed below the assignment's 10-second target. This result applies to the tested workload and environment.
-
-Original output: [race_test_2026-11-27.txt](evidence/race_test_2026-11-27.txt). The course-provided test script remains external to this repository.
-
-### Post-test cleanup
-
-A query against public.products found zero remaining rows with product_name matching RACE TEST FIXTURE%. The race-test fixtures were cleaned up.
-
-### Remaining validation work
-
-| Item | Status |
-|---|---|
-| Order-placement concurrency | Passed |
-| Insufficient-stock handling | Passed |
-| Inventory movements during tested sales | Passed |
-| Race-test fixture cleanup | Verified |
-| Customer spending report row count | Not yet measured |
-| Report execution plans and before/after timings | Not yet measured |
-| Monitoring view runtime output | Not yet verified; 12 checks defined in SQL source |
-| Recursive cycle and missing-parent runtime checks | Not yet verified |
-| Inventory movement rollback on induced failure | Not yet verified |
-
-The concurrency test does not establish that every other SQL solution has passed runtime validation.
+[`sql/benchmarks/report_benchmark.sql`](../sql/benchmarks/report_benchmark.sql) compares five variants: naive with and without an index, set-based with and without a covering index, and set-based with more sort memory. Run it only on a disposable copy, because it creates and drops indexes.

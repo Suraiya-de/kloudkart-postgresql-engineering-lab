@@ -1,63 +1,42 @@
-# Business Memo
+# Memo
 
-**To:** Nana
+**To:** Nana Adjei, Operations
+**From:** Database Engineering
+**Date:** 27 November 2026
+**Subject:** Overselling, the Monday report, and what your data is telling you
 
-**From:** Database Engineering Team
+## What is fixed
 
-**Subject:** Kloud Kart Database Assessment and Recommended Improvements
+**Overselling.** When two customers try to buy the last unit at the same moment, one gets it and the other is told "out of stock" straight away. We tested this 75 times, and in a simulated flash sale with 400 customers buying one product at once: every unit was sold exactly once and all 400 orders went through in under five seconds. Stock can no longer drop below zero, whatever tries to change it.
 
-## Executive Summary
+Neither answer you were given would have fixed things on its own. Triggers alone check stock in a way two buyers can still pass together. A bigger server would still take hours, because the report was slow in how it was written. Both fixes run on your current server at no extra cost.
 
-The assessment of Kloud Kart's PostgreSQL database identified data-quality issues that could affect order reporting, inventory visibility and operational reliability. Four database improvements have also been implemented to strengthen order processing, customer spending reports and inventory management.
+**The Monday report.** It now covers every customer: total spent, number of orders, spend in each of the last 12 months, a running total and a ranking, in under two seconds on a laptop. The running total always ends on the customer's total spent, so Adwoa can see at a glance that the figures agree.
 
-These findings indicate areas requiring attention. They should not automatically be interpreted as confirmed financial losses.
+**Low stock.** One view shows low-stock counts for every category, rolled up through every level (Electronics, Phones, Phone Accessories, Cases), in a fraction of a second. Products with no category appear on their own line.
 
-## Key Findings
+**The trail.** Every sale, restock, return, correction and write-off is recorded with its reason. A stock figure changed any other way is now recorded too, with the login that changed it.
 
-**1. Order and customer data integrity**
+**Extra: a Monday health check.** One list shows each known data problem and how many records it affects, so new problems are spotted the week they appear.
 
-The database contains 210 orders referencing 190 distinct missing customer IDs and 692 order-item records referencing 689 missing order IDs.
+## What we found
 
-These records can affect the reliability of order reporting and make it difficult to trace some transactions to their associated customers or orders.
+1. **Stock figures that disagree with their own history.** 144 products, 2,553 units in total. Forty-nine are already low on stock, where a wrong count leads straight to overselling.
+2. **"Complete" and "completed".** About 22,000 sales were recorded as "complete". Ignoring them would under-report customer spending by a fifth and get 24 of your top 100 customers wrong. We have counted them as sales.
+3. **Order totals that disagree with their items.** 2,426 orders, partly from items entered twice and six orders keyed as 999 or 9,999 units instead of one.
+4. **Stock below zero on 14 products.** For 13 of them the records show exactly how it happened: units sold that did not exist, the overselling you described.
+5. **Smaller issues.** 210 orders with no customer on file, 15 orders dated in the future, and 533 customers registered more than once.
 
-**2. Inconsistent order statuses**
+## What we recommend next
 
-Order statuses include inconsistent spellings such as `complete` and `completed`, and `canceled` and `cancelled`. The customer spending report currently includes only normalised `completed` orders; `complete` remains unconfirmed and is not combined with it.
+1. Count the 144 mismatched products and the 14 below zero, and record each correction through the new process.
+2. Confirm that "complete" means "completed", then use one set of status names everywhere.
+3. Agree with finance whether revenue is the order total or the sum of its items.
+4. Before the first flash sale, have your developers make the shop share a small, fixed number of connections to the system.
 
-This can cause reporting discrepancies when queries recognise only one spelling.
+## What we cannot stand behind yet
 
-**3. Inventory data concerns**
-
-The original investigation observed 14 products with negative stock and 577 products with zero stock. Zero stock can be legitimate and is not itself classified as a data defect. These counts need fresh-load verification before remediation.
-
-There are also inventory movements referencing missing products. These issues reduce confidence in inventory visibility and should be investigated before stock figures are used for important operational decisions.
-
-**4. Category hierarchy problems**
-
-The original investigation observed a cycle between categories 9001 and 9002, and a separate category (9003) referencing missing parent 8999. It also recorded 37 products with NULL category IDs, which are omitted from category roll-ups. These findings need fresh-load verification.
-
-These defects can affect category-based inventory reporting.
-
-## Improvements Implemented
-
-- **Safer order processing:** Order placement now protects stock from overselling when multiple customers attempt to purchase simultaneously.
-- **Improved customer spending reports:** The reporting solution provides customer rankings, order counts, monthly spending and running totals.
-- **Better inventory visibility:** Low-stock reporting traverses nested categories and identifies hierarchy defects.
-- **Inventory auditability:** Controlled inventory adjustments update stock and create corresponding audit records within the same transaction.
-
-The SQL implementations and monitoring view are included in the repository. Runtime test and performance evidence is not available in the current repository; see [Validation Evidence](validation_evidence.md).
-
-## Business Recommendations
-
-1. Investigate orphan records and establish the correct business treatment before attempting corrections.
-2. Standardise order statuses across applications and reporting.
-3. Investigate the 14 products with negative stock quantities and determine whether corrections are justified.
-4. Confirm the correct parent categories and assign unclassified products only from authoritative records.
-5. After reviewing existing exceptions, introduce appropriate foreign keys, NOT NULL constraints and validation rules.
-6. Introduce recurring checks for orphan records, negative stock and inconsistent status values; treat zero stock as an availability signal unless business policy defines it otherwise.
-
-## Conclusion
-
-The assessment has established a clearer picture of the database's existing weaknesses and delivered four practical engineering improvements.
-
-The next priority should be controlled remediation of the identified data-quality issues, followed by stronger database constraints and ongoing monitoring. This will help Kloud Kart improve confidence in its operational reports and inventory records while reducing the risk of similar issues recurring.
+- **Which figure is right** for the 144 products and 2,426 orders. Only a stock count and payment records can settle it.
+- **"Complete" meaning "completed."** The evidence is strong, but it is our judgement. If wrong, the report overstates spend by 68 million.
+- **Flash-sale day itself.** Tested on a laptop, not your live shop, and recommendation 4 must be in place first.
+- **Adwoa's original report.** We did not have it, so the speed comparison is against a typical version, not hers.

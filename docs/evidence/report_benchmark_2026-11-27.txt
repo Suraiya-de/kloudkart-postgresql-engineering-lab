@@ -1,0 +1,1286 @@
+Kloud Kart - Customer spending report: before and after
+=======================================================
+
+Date: 2026-11-27
+Environment: Windows 11 laptop, Docker Desktop; PostgreSQL 18.7 container (8 vCPU, 16 GB visible),
+shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC.
+Database: kloudkart_audit (a scratch database), created empty and loaded with the course schema.sql and load.sql
+(categories 94, products 4,023, customers 40,420, orders 159,384, order_items 336,559, inventory_log 282,352).
+
+Command: psql -f sql/benchmarks/report_benchmark.sql
+Report date (p_as_of): 2026-08-31 23:59:59, the end of the extract.
+Timings are EXPLAIN ANALYZE execution times on a warm cache.
+
+Summary
+-------
+A  Naive report (one correlated lookup per figure, per customer, per month),
+   no index:              27,259 ms for 100 customers
+                          (about 11,000 s, roughly 3 hours, for 40,420 customers,
+                          extrapolated linearly; not run in full)
+B  Same naive report with an index on orders(customer_id):
+                          46 ms for 100 customers (about 18 s extrapolated)
+C  Set-based report (solution 02), all 40,420 customers, 485,040 rows,
+   no extra index:        median 1,375 ms (1,362 - 1,434 ms over 5 runs)
+D  C plus a partial covering index on completed orders:
+                          median 1,277 ms (1,265 - 1,390 ms over 5 runs), 7% faster
+E  C with work_mem raised to 64MB so sorts stay in memory:
+                          median 1,471 ms (1,458 - 1,506 ms over 5 runs), not faster
+
+Decision: ship C. D saves about 100 ms on a weekly report but adds an index
+that every order insert must maintain during a flash sale. E shows the
+remaining time is the window and aggregate work over 485,040 output rows,
+not disk sorting, so no further tuning was pursued.
+
+A is a reconstruction of the usual hand-written shape of this report;
+Adwoa's actual query was not supplied.
+
+Raw output
+----------
+Pager usage is off.
+                                                      version                                                       
+--------------------------------------------------------------------------------------------------------------------
+ PostgreSQL 18.7 (Debian 18.7-1.pgdg13+5) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+(1 row)
+
+SELECT 100
+ANALYZE
+==== A. Naive report, 100 customers, no index
+                                                                                                                                                                                                                                              QUERY PLAN                                                                                                                                                                                                                                              
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop (actual rows=1200.00 loops=1)
+   Buffers: shared hit=6216004, local hit=1
+   ->  Merge Join (actual rows=100.00 loops=1)
+         Merge Cond: (c.customer_id = s.customer_id)
+         Buffers: shared hit=4, local hit=1
+         ->  Index Scan using customers_pkey on customers c (actual rows=101.00 loops=1)
+               Index Searches: 1
+               Buffers: shared hit=4
+         ->  Sort (actual rows=100.00 loops=1)
+               Sort Key: s.customer_id
+               Sort Method: quicksort  Memory: 25kB
+               Buffers: local hit=1
+               ->  Seq Scan on sample_customers s (actual rows=100.00 loops=1)
+                     Buffers: local hit=1
+   ->  Materialize (actual rows=12.00 loops=100)
+         Storage: Memory  Maximum Storage: 17kB
+         ->  Result (actual rows=12.00 loops=1)
+               ->  ProjectSet (actual rows=12.00 loops=1)
+                     ->  Result (actual rows=1.00 loops=1)
+   SubPlan 1
+     ->  Aggregate (actual rows=1.00 loops=1200)
+           Buffers: shared hit=1554000
+           ->  Seq Scan on orders o (actual rows=2.76 loops=1200)
+                 Filter: ((order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (customer_id = c.customer_id) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+                 Rows Removed by Filter: 159381
+                 Buffers: shared hit=1554000
+   SubPlan 2
+     ->  Aggregate (actual rows=1.00 loops=1200)
+           Buffers: shared hit=1554000
+           ->  Seq Scan on orders o_1 (actual rows=2.76 loops=1200)
+                 Filter: ((order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (customer_id = c.customer_id) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+                 Rows Removed by Filter: 159381
+                 Buffers: shared hit=1554000
+   SubPlan 3
+     ->  Aggregate (actual rows=1.00 loops=1200)
+           Buffers: shared hit=1554000
+           ->  Seq Scan on orders o_2 (actual rows=0.22 loops=1200)
+                 Filter: ((order_date >= (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)) AND (customer_id = c.customer_id) AND (order_date < ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) + '1 mon'::interval)) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+                 Rows Removed by Filter: 159384
+                 Buffers: shared hit=1554000
+   SubPlan 4
+     ->  Aggregate (actual rows=1.00 loops=1200)
+           Buffers: shared hit=1554000
+           ->  Seq Scan on orders o_3 (actual rows=0.97 loops=1200)
+                 Filter: ((customer_id = c.customer_id) AND (order_date < ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) + '1 mon'::interval)) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+                 Rows Removed by Filter: 159383
+                 Buffers: shared hit=1554000
+ Planning:
+   Buffers: shared hit=137
+ Planning Time: 0.671 ms
+ Execution Time: 27258.669 ms
+(51 rows)
+
+CREATE INDEX
+ANALYZE
+==== B. Naive report, 100 customers, index on orders(customer_id)
+                                                                                                                                                                                                                             QUERY PLAN                                                                                                                                                                                                                             
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop (actual rows=1200.00 loops=1)
+   Buffers: shared hit=28706 read=2, local hit=1
+   ->  Merge Join (actual rows=100.00 loops=1)
+         Merge Cond: (c.customer_id = s.customer_id)
+         Buffers: shared hit=4, local hit=1
+         ->  Index Scan using customers_pkey on customers c (actual rows=101.00 loops=1)
+               Index Searches: 1
+               Buffers: shared hit=4
+         ->  Sort (actual rows=100.00 loops=1)
+               Sort Key: s.customer_id
+               Sort Method: quicksort  Memory: 25kB
+               Buffers: local hit=1
+               ->  Seq Scan on sample_customers s (actual rows=100.00 loops=1)
+                     Buffers: local hit=1
+   ->  Materialize (actual rows=12.00 loops=100)
+         Storage: Memory  Maximum Storage: 17kB
+         ->  Result (actual rows=12.00 loops=1)
+               ->  ProjectSet (actual rows=12.00 loops=1)
+                     ->  Result (actual rows=1.00 loops=1)
+   SubPlan 1
+     ->  Aggregate (actual rows=1.00 loops=1200)
+           Buffers: shared hit=7174 read=2
+           ->  Bitmap Heap Scan on orders o (actual rows=2.76 loops=1200)
+                 Recheck Cond: (customer_id = c.customer_id)
+                 Filter: ((order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+                 Rows Removed by Filter: 1
+                 Heap Blocks: exact=4776
+                 Buffers: shared hit=7174 read=2
+                 ->  Bitmap Index Scan on bench_orders_customer (actual rows=3.98 loops=1200)
+                       Index Cond: (customer_id = c.customer_id)
+                       Index Searches: 1200
+                       Buffers: shared hit=2398 read=2
+   SubPlan 2
+     ->  Aggregate (actual rows=1.00 loops=1200)
+           Buffers: shared hit=7176
+           ->  Bitmap Heap Scan on orders o_1 (actual rows=2.76 loops=1200)
+                 Recheck Cond: (customer_id = c.customer_id)
+                 Filter: ((order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+                 Rows Removed by Filter: 1
+                 Heap Blocks: exact=4776
+                 Buffers: shared hit=7176
+                 ->  Bitmap Index Scan on bench_orders_customer (actual rows=3.98 loops=1200)
+                       Index Cond: (customer_id = c.customer_id)
+                       Index Searches: 1200
+                       Buffers: shared hit=2400
+   SubPlan 3
+     ->  Aggregate (actual rows=1.00 loops=1200)
+           Buffers: shared hit=7176
+           ->  Bitmap Heap Scan on orders o_2 (actual rows=0.22 loops=1200)
+                 Recheck Cond: (customer_id = c.customer_id)
+                 Filter: ((order_date >= (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)) AND (order_date < ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) + '1 mon'::interval)) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+                 Rows Removed by Filter: 4
+                 Heap Blocks: exact=4776
+                 Buffers: shared hit=7176
+                 ->  Bitmap Index Scan on bench_orders_customer (actual rows=3.98 loops=1200)
+                       Index Cond: (customer_id = c.customer_id)
+                       Index Searches: 1200
+                       Buffers: shared hit=2400
+   SubPlan 4
+     ->  Aggregate (actual rows=1.00 loops=1200)
+           Buffers: shared hit=7176
+           ->  Bitmap Heap Scan on orders o_3 (actual rows=0.97 loops=1200)
+                 Recheck Cond: (customer_id = c.customer_id)
+                 Filter: ((order_date < ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) + '1 mon'::interval)) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+                 Rows Removed by Filter: 3
+                 Heap Blocks: exact=4776
+                 Buffers: shared hit=7176
+                 ->  Bitmap Index Scan on bench_orders_customer (actual rows=3.98 loops=1200)
+                       Index Cond: (customer_id = c.customer_id)
+                       Index Searches: 1200
+                       Buffers: shared hit=2400
+ Planning:
+   Buffers: shared hit=24 read=1
+ Planning Time: 0.458 ms
+ Execution Time: 45.752 ms
+(75 rows)
+
+DROP INDEX
+ANALYZE
+==== C. Set-based report, all customers, no extra index: 5 runs
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1818, temp read=9023 written=9748
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815, temp read=5064 written=5777
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815, temp read=5064 written=5777
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1815, temp read=3935 written=4746
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815, temp read=255 written=1055
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815, temp read=255 written=1055
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1815, temp read=255 written=1055
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815, temp read=255 written=1055
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295, temp read=255 written=1055
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295, temp read=255 written=1055
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3384kB
+                                                               Buffers: shared hit=1295, temp read=255 written=1055
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=1295, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1129 written=1031
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=829 written=730
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3632kB
+                                 Buffers: temp read=829 written=730
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning:
+   Buffers: shared hit=254
+ Planning Time: 0.863 ms
+ Execution Time: 1362.519 ms
+(71 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1815, temp read=9023 written=9748
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815, temp read=5064 written=5777
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815, temp read=5064 written=5777
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1815, temp read=3935 written=4746
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815, temp read=255 written=1055
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815, temp read=255 written=1055
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1815, temp read=255 written=1055
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815, temp read=255 written=1055
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295, temp read=255 written=1055
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295, temp read=255 written=1055
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3384kB
+                                                               Buffers: shared hit=1295, temp read=255 written=1055
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=1295, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1129 written=1031
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=829 written=730
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3632kB
+                                 Buffers: temp read=829 written=730
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning Time: 0.515 ms
+ Execution Time: 1377.167 ms
+(69 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1815, temp read=9023 written=9748
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815, temp read=5064 written=5777
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815, temp read=5064 written=5777
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1815, temp read=3935 written=4746
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815, temp read=255 written=1055
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815, temp read=255 written=1055
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1815, temp read=255 written=1055
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815, temp read=255 written=1055
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295, temp read=255 written=1055
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295, temp read=255 written=1055
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3384kB
+                                                               Buffers: shared hit=1295, temp read=255 written=1055
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=1295, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1129 written=1031
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=829 written=730
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3632kB
+                                 Buffers: temp read=829 written=730
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning Time: 0.699 ms
+ Execution Time: 1433.815 ms
+(69 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1815, temp read=9023 written=9748
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815, temp read=5064 written=5777
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815, temp read=5064 written=5777
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1815, temp read=3935 written=4746
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815, temp read=255 written=1055
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815, temp read=255 written=1055
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1815, temp read=255 written=1055
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815, temp read=255 written=1055
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295, temp read=255 written=1055
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295, temp read=255 written=1055
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3384kB
+                                                               Buffers: shared hit=1295, temp read=255 written=1055
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=1295, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1129 written=1031
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=829 written=730
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3632kB
+                                 Buffers: temp read=829 written=730
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning Time: 0.664 ms
+ Execution Time: 1375.111 ms
+(69 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1815, temp read=9023 written=9748
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815, temp read=5064 written=5777
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815, temp read=5064 written=5777
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1815, temp read=3935 written=4746
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815, temp read=255 written=1055
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815, temp read=255 written=1055
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1815, temp read=255 written=1055
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815, temp read=255 written=1055
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295, temp read=255 written=1055
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295, temp read=255 written=1055
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3384kB
+                                                               Buffers: shared hit=1295, temp read=255 written=1055
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=1295, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1129 written=1031
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=829 written=730
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3632kB
+                                 Buffers: temp read=829 written=730
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning Time: 0.547 ms
+ Execution Time: 1362.419 ms
+(69 rows)
+
+CREATE INDEX
+VACUUM
+==== D. Set-based report with a partial covering index: 5 runs
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=525 read=560, temp read=9058 written=9787
+   CTE completed_orders
+     ->  Index Only Scan using bench_orders_completed on orders o (actual rows=111334.00 loops=1)
+           Index Cond: (order_date <= '2026-08-31 23:59:59'::timestamp without time zone)
+           Filter: (total_amount IS NOT NULL)
+           Heap Fetches: 45
+           Index Searches: 1
+           Buffers: shared hit=5 read=560
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=525 read=560, temp read=5099 written=5816
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=525 read=560, temp read=5099 written=5816
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=525 read=560, temp read=3982 written=4795
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=525 read=560, temp read=302 written=1104
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=525 read=560, temp read=302 written=1104
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=525 read=560, temp read=302 written=1104
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=525 read=560, temp read=302 written=1104
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=5 read=560, temp read=302 written=1104
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=5 read=560, temp read=302 written=1104
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3480kB
+                                                               Buffers: shared hit=5 read=560, temp read=302 written=1104
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=5 read=560, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1117 written=1021
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=817 written=720
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3608kB
+                                 Buffers: temp read=817 written=720
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning:
+   Buffers: shared hit=22
+ Planning Time: 0.641 ms
+ Execution Time: 1303.794 ms
+(73 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1082, temp read=9058 written=9787
+   CTE completed_orders
+     ->  Index Only Scan using bench_orders_completed on orders o (actual rows=111334.00 loops=1)
+           Index Cond: (order_date <= '2026-08-31 23:59:59'::timestamp without time zone)
+           Filter: (total_amount IS NOT NULL)
+           Heap Fetches: 45
+           Index Searches: 1
+           Buffers: shared hit=562
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1082, temp read=5099 written=5816
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1082, temp read=5099 written=5816
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1082, temp read=3982 written=4795
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1082, temp read=302 written=1104
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1082, temp read=302 written=1104
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1082, temp read=302 written=1104
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1082, temp read=302 written=1104
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=562, temp read=302 written=1104
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=562, temp read=302 written=1104
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3480kB
+                                                               Buffers: shared hit=562, temp read=302 written=1104
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=562, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1117 written=1021
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=817 written=720
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3608kB
+                                 Buffers: temp read=817 written=720
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning Time: 0.825 ms
+ Execution Time: 1264.883 ms
+(71 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1082, temp read=9058 written=9787
+   CTE completed_orders
+     ->  Index Only Scan using bench_orders_completed on orders o (actual rows=111334.00 loops=1)
+           Index Cond: (order_date <= '2026-08-31 23:59:59'::timestamp without time zone)
+           Filter: (total_amount IS NOT NULL)
+           Heap Fetches: 45
+           Index Searches: 1
+           Buffers: shared hit=562
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1082, temp read=5099 written=5816
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1082, temp read=5099 written=5816
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1082, temp read=3982 written=4795
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1082, temp read=302 written=1104
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1082, temp read=302 written=1104
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1082, temp read=302 written=1104
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1082, temp read=302 written=1104
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=562, temp read=302 written=1104
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=562, temp read=302 written=1104
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3480kB
+                                                               Buffers: shared hit=562, temp read=302 written=1104
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=562, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1117 written=1021
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=817 written=720
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3608kB
+                                 Buffers: temp read=817 written=720
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning Time: 1.190 ms
+ Execution Time: 1275.423 ms
+(71 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1082, temp read=9058 written=9787
+   CTE completed_orders
+     ->  Index Only Scan using bench_orders_completed on orders o (actual rows=111334.00 loops=1)
+           Index Cond: (order_date <= '2026-08-31 23:59:59'::timestamp without time zone)
+           Filter: (total_amount IS NOT NULL)
+           Heap Fetches: 45
+           Index Searches: 1
+           Buffers: shared hit=562
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1082, temp read=5099 written=5816
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1082, temp read=5099 written=5816
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1082, temp read=3982 written=4795
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1082, temp read=302 written=1104
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1082, temp read=302 written=1104
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1082, temp read=302 written=1104
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1082, temp read=302 written=1104
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=562, temp read=302 written=1104
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=562, temp read=302 written=1104
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3480kB
+                                                               Buffers: shared hit=562, temp read=302 written=1104
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=562, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1117 written=1021
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=817 written=720
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3608kB
+                                 Buffers: temp read=817 written=720
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning Time: 0.572 ms
+ Execution Time: 1277.366 ms
+(71 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: external merge  Disk: 31672kB
+   Buffers: shared hit=1082, temp read=9058 written=9787
+   CTE completed_orders
+     ->  Index Only Scan using bench_orders_completed on orders o (actual rows=111334.00 loops=1)
+           Index Cond: (order_date <= '2026-08-31 23:59:59'::timestamp without time zone)
+           Filter: (total_amount IS NOT NULL)
+           Heap Fetches: 45
+           Index Searches: 1
+           Buffers: shared hit=562
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1082, temp read=5099 written=5816
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1082, temp read=5099 written=5816
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: external merge  Disk: 29440kB
+                     Buffers: shared hit=1082, temp read=3982 written=4795
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1082, temp read=302 written=1104
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1082, temp read=302 written=1104
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3335kB
+                                       Buffers: shared hit=1082, temp read=302 written=1104
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1082, temp read=302 written=1104
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=562, temp read=302 written=1104
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=562, temp read=302 written=1104
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 5  Memory Usage: 8257kB  Disk Usage: 3480kB
+                                                               Buffers: shared hit=562, temp read=302 written=1104
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Disk  Maximum Storage: 4096kB
+                                                                     Buffers: shared hit=562, temp written=450
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: external merge  Disk: 2400kB
+                     Buffers: temp read=1117 written=1021
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           Buffers: temp read=817 written=720
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 5  Memory Usage: 8241kB  Disk Usage: 3608kB
+                                 Buffers: temp read=817 written=720
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Disk  Maximum Storage: 4096kB
+                                       Buffers: temp read=451 written=1
+ Planning Time: 0.560 ms
+ Execution Time: 1390.095 ms
+(71 rows)
+
+DROP INDEX
+ANALYZE
+SET
+==== E. Set-based report with work_mem 64MB: 5 runs
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: quicksort  Memory: 48867kB
+   Buffers: shared hit=1815
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: quicksort  Memory: 44501kB
+                     Buffers: shared hit=1815
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3570kB
+                                       Buffers: shared hit=1815
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 1  Memory Usage: 17441kB
+                                                               Buffers: shared hit=1295
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Memory  Maximum Storage: 6308kB
+                                                                     Buffers: shared hit=1295
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: quicksort  Memory: 6039kB
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 1  Memory Usage: 34833kB
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Memory  Maximum Storage: 6308kB
+ Planning:
+   Buffers: shared hit=15
+ Planning Time: 0.617 ms
+ Execution Time: 1467.646 ms
+(67 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: quicksort  Memory: 48867kB
+   Buffers: shared hit=1815
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: quicksort  Memory: 44501kB
+                     Buffers: shared hit=1815
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3570kB
+                                       Buffers: shared hit=1815
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 1  Memory Usage: 17441kB
+                                                               Buffers: shared hit=1295
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Memory  Maximum Storage: 6308kB
+                                                                     Buffers: shared hit=1295
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: quicksort  Memory: 6039kB
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 1  Memory Usage: 34833kB
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Memory  Maximum Storage: 6308kB
+ Planning Time: 0.625 ms
+ Execution Time: 1490.510 ms
+(65 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: quicksort  Memory: 48867kB
+   Buffers: shared hit=1815
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: quicksort  Memory: 44501kB
+                     Buffers: shared hit=1815
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3570kB
+                                       Buffers: shared hit=1815
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 1  Memory Usage: 17441kB
+                                                               Buffers: shared hit=1295
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Memory  Maximum Storage: 6308kB
+                                                                     Buffers: shared hit=1295
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: quicksort  Memory: 6039kB
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 1  Memory Usage: 34833kB
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Memory  Maximum Storage: 6308kB
+ Planning Time: 1.100 ms
+ Execution Time: 1506.495 ms
+(65 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: quicksort  Memory: 48867kB
+   Buffers: shared hit=1815
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: quicksort  Memory: 44501kB
+                     Buffers: shared hit=1815
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3570kB
+                                       Buffers: shared hit=1815
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 1  Memory Usage: 17441kB
+                                                               Buffers: shared hit=1295
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Memory  Maximum Storage: 6308kB
+                                                                     Buffers: shared hit=1295
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: quicksort  Memory: 6039kB
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 1  Memory Usage: 34833kB
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Memory  Maximum Storage: 6308kB
+ Planning Time: 0.820 ms
+ Execution Time: 1471.300 ms
+(65 rows)
+
+                                                                                                                             QUERY PLAN                                                                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort (actual rows=485040.00 loops=1)
+   Sort Key: (row_number() OVER w1), (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+   Sort Method: quicksort  Memory: 48867kB
+   Buffers: shared hit=1815
+   CTE completed_orders
+     ->  Seq Scan on orders o (actual rows=111334.00 loops=1)
+           Filter: ((total_amount IS NOT NULL) AND (order_date <= '2026-08-31 23:59:59'::timestamp without time zone) AND (lower(btrim(status)) = ANY ('{completed,complete}'::text[])))
+           Rows Removed by Filter: 48050
+           Buffers: shared hit=1295
+   ->  WindowAgg (actual rows=485040.00 loops=1)
+         Window: w1 AS (PARTITION BY c.customer_id ORDER BY (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+         Storage: Memory  Maximum Storage: 17kB
+         Buffers: shared hit=1815
+         ->  Merge Left Join (actual rows=485040.00 loops=1)
+               Merge Cond: ((c.customer_id = ms.customer_id) AND ((((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date) = ms.spending_month))
+               Buffers: shared hit=1815
+               ->  Sort (actual rows=485040.00 loops=1)
+                     Sort Key: c.customer_id, (((generate_series('2025-09-01 00:00:00'::timestamp without time zone, '2026-08-01 00:00:00'::timestamp without time zone, '1 mon'::interval)))::date)
+                     Sort Method: quicksort  Memory: 44501kB
+                     Buffers: shared hit=1815
+                     ->  Nested Loop (actual rows=485040.00 loops=1)
+                           Buffers: shared hit=1815
+                           ->  WindowAgg (actual rows=40420.00 loops=1)
+                                 Window: w1 AS (ORDER BY (COALESCE(cord.total_spent, '0'::numeric)), c.customer_id ROWS UNBOUNDED PRECEDING)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 Buffers: shared hit=1815
+                                 ->  Sort (actual rows=40420.00 loops=1)
+                                       Sort Key: (COALESCE(cord.total_spent, '0'::numeric)) DESC, c.customer_id
+                                       Sort Method: quicksort  Memory: 3570kB
+                                       Buffers: shared hit=1815
+                                       ->  Hash Left Join (actual rows=40420.00 loops=1)
+                                             Hash Cond: (c.customer_id = cord.customer_id)
+                                             Buffers: shared hit=1815
+                                             ->  Seq Scan on customers c (actual rows=40420.00 loops=1)
+                                                   Buffers: shared hit=520
+                                             ->  Hash (actual rows=38036.00 loops=1)
+                                                   Buckets: 65536 (originally 1024)  Batches: 1 (originally 1)  Memory Usage: 2533kB
+                                                   Buffers: shared hit=1295
+                                                   ->  Subquery Scan on cord (actual rows=38036.00 loops=1)
+                                                         Buffers: shared hit=1295
+                                                         ->  HashAggregate (actual rows=38036.00 loops=1)
+                                                               Group Key: co.customer_id
+                                                               Batches: 1  Memory Usage: 17441kB
+                                                               Buffers: shared hit=1295
+                                                               ->  CTE Scan on completed_orders co (actual rows=111334.00 loops=1)
+                                                                     Storage: Memory  Maximum Storage: 6308kB
+                                                                     Buffers: shared hit=1295
+                           ->  Materialize (actual rows=12.00 loops=40420)
+                                 Storage: Memory  Maximum Storage: 17kB
+                                 ->  Result (actual rows=12.00 loops=1)
+                                       ->  ProjectSet (actual rows=12.00 loops=1)
+                                             ->  Result (actual rows=1.00 loops=1)
+               ->  Sort (actual rows=92677.00 loops=1)
+                     Sort Key: ms.customer_id, ms.spending_month
+                     Sort Method: quicksort  Memory: 6039kB
+                     ->  Subquery Scan on ms (actual rows=92818.00 loops=1)
+                           ->  HashAggregate (actual rows=92818.00 loops=1)
+                                 Group Key: co_1.customer_id, (date_trunc('month'::text, co_1.order_date))::date
+                                 Batches: 1  Memory Usage: 34833kB
+                                 ->  CTE Scan on completed_orders co_1 (actual rows=109846.00 loops=1)
+                                       Filter: (order_date >= '2025-09-01 00:00:00'::timestamp without time zone)
+                                       Rows Removed by Filter: 1488
+                                       Storage: Memory  Maximum Storage: 6308kB
+ Planning Time: 0.572 ms
+ Execution Time: 1457.543 ms
+(65 rows)
+
+RESET
