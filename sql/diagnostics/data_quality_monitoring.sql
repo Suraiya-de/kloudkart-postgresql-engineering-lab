@@ -111,8 +111,8 @@ checks AS (
     SELECT
         'zero_stock',
         COUNT(*)::bigint,
-        'MEDIUM',
-        'Products with no available stock'
+        'INFO',
+        'Products at zero stock; availability signal, not necessarily a data defect'
     FROM public.products
     WHERE stock_quantity = 0
 
@@ -122,7 +122,7 @@ checks AS (
         'nonstandard_order_statuses',
         COUNT(*)::bigint,
         'MEDIUM',
-        'Orders with null, non-standard or non-normalised status values'
+        'Orders with null, non-standard, unconfirmed or non-normalised status values'
     FROM public.orders
     WHERE status IS NULL
        OR LOWER(BTRIM(status)) NOT IN (

@@ -50,7 +50,7 @@ The function uses `pending` as the initial order status because the supplied dat
 
 The function does not implement payment processing or order cancellation and refund workflows.
 
-The supplied concurrency test was passed, including the 400-buyer, 50-unit contention scenario.
+The conditional update provides the no-oversell guarantee for concurrent requests that target the same product. The repository contains no race-test script or run output, so the 400-buyer, 50-unit result and the 400-orders-in-10-seconds target are not verified here. See [Validation Evidence](validation_evidence.md).
 
 ## 3. Customer Spending Report
 
@@ -64,9 +64,9 @@ This makes the reporting logic easier to inspect and maintain.
 
 ### Customer eligibility
 
-The report recognises both `complete` and `completed` as completed order statuses.
+The report recognises only the normalised `completed` status (`LOWER(TRIM(status)) = 'completed'`).
 
-This addresses the inconsistent status representations found during the data diagnosis.
+The separate `complete` status remains excluded because its business meaning has not been confirmed. This conservative rule may omit orders that the business later determines should qualify; confirm the rule with Nana before broadening eligibility. Formatting variants of `completed` remain eligible after lowercasing and trimming.
 
 The report also:
 
@@ -77,11 +77,13 @@ The report also:
 
 These rules prevent questionable records from silently affecting customer spending totals.
 
+The report returns at most 100 customers with qualifying orders. It uses `ROW_NUMBER()` ordered by total spending descending and then `customer_id` ascending, so ties at the cutoff are broken by customer ID rather than expanding the report beyond 100 customers.
+
 ### Decision: Partial covering index
 
 A partial index was created on the order date and customer identifier, including the total amount.
 
-The index is restricted to eligible completed statuses and non-NULL order dates.
+The index is restricted to the same eligible status rule (`LOWER(TRIM(status)) = 'completed'`) and non-NULL order dates.
 
 This reduces the index entries relevant to the report and can reduce the need to retrieve values directly from the table.
 
@@ -91,7 +93,7 @@ A full index would include orders that the report does not use.
 
 The partial index focuses on the records relevant to the report, while the included total amount can help PostgreSQL satisfy parts of the query using an index-only scan.
 
-`EXPLAIN ANALYZE` was used to inspect the execution plan and performance.
+No `EXPLAIN ANALYZE` plan or before-and-after timing is included in the repository. Performance benefit is therefore unverified; see [Validation Evidence](validation_evidence.md) for the repeatable measurement procedure.
 
 ### Alternatives considered
 
@@ -125,7 +127,7 @@ A recursive CTE provides a flexible way to traverse arbitrarily nested parent-ch
 
 ### Decision: Detect hierarchy defects
 
-The existing data contains a cycle between categories 9001 and 9002, as well as a missing parent reference for category 9003.
+The original investigation reported a cycle between categories 9001 and 9002 and a missing parent reference for category 9003. Those findings have not been rechecked against a fresh load of the authorized dataset.
 
 The recursive traversal maintains a path of visited category identifiers. It uses that path to prevent endless traversal and flag cycles.
 
@@ -133,7 +135,7 @@ Missing parent relationships are also identified and reported.
 
 ### Indexing
 
-Indexes were added to the category parent identifier and product category identifier to support hierarchy traversal and product aggregation.
+An index was added to `products.category_id` for the product-to-category aggregation join. `idx_categories_parent_id` is also created, but the current function walks from a category to its parent by matching `parent.category_id = cw.parent_id`; that lookup uses the category identifier, not the `parent_id` index. The included integrity checks also join on the referenced category ID. No execution plan demonstrates a benefit from `idx_categories_parent_id` for the current scripts. Keep its benefit unclaimed until an actual plan for a child-category lookup shows otherwise; any removal should likewise be based on the target workload and measured write/storage trade-off.
 
 ### Alternatives considered
 
@@ -147,7 +149,7 @@ Categories affected by the cycle are flagged so their totals can be interpreted 
 
 The six products directly associated with category 9001 can appear in the roll-ups for both cyclic categories. Therefore, totals across those categories must not be added as though they represent independent products.
 
-The 37 products with NULL category identifiers are not included in category-based roll-ups.
+The original investigation reported 37 products with NULL category identifiers. These products are not included in category-based roll-ups; the count needs fresh-load verification. Their intended category must come from an authoritative source.
 
 The function reports the existing hierarchy defects rather than modifying the original category data.
 
@@ -216,7 +218,7 @@ The implementation follows these principles:
 3. **Make reporting rules explicit:** Define which records qualify for business metrics.
 4. **Design for changing data structures:** Use recursive queries for hierarchical reporting.
 5. **Preserve auditability:** Record inventory movements alongside stock changes.
-6. **Validate with evidence:** Use concurrency tests, independent aggregate checks, execution plans and transaction rollback tests.
+6. **Validate with evidence:** Record concurrency tests, independent aggregate checks, execution plans and transaction rollback tests. The current repository does not contain those run artifacts; see [Validation Evidence](validation_evidence.md).
 
 ## 8. Conclusion
 

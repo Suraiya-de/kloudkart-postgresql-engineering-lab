@@ -30,48 +30,20 @@ The view provides 12 monitoring checks covering:
 
 - Missing category parents and circular category relationships.
 - Orders, order items and inventory logs referencing missing records.
-- Negative product prices, negative stock and zero stock.
+- Negative product prices and stock, plus a separate zero-stock availability signal.
 - Invalid order quantities.
 - Nonstandard or inconsistently formatted order statuses.
 
 Each check reports a name, violation count, severity, description and check timestamp. The view reads the current database state without modifying source records.
 
+The `zero_stock` result is an `INFO` availability signal because zero stock can be legitimate; negative stock remains a data-quality concern.
+
 ### Deploying the Monitoring View
 
-The following example uses the manual Docker container named `kloudkart`:
+Connect to the existing course-provided PostgreSQL database as described in [Database Setup](#database-setup). Deploy solution 03 first because the view calls `public.low_stock_by_category()`:
 
 ```powershell
-docker cp .\sql\diagnostics\data_quality_monitoring.sql kloudkart:/tmp/
-```
-
-Connect to PostgreSQL:
-
-```powershell
-docker exec -it kloudkart psql -U postgres -d kloudkart_lab
-```
-
-Execute the SQL file:
-
-```sql
-\i /tmp/data_quality_monitoring.sql
-```
-
-When using Docker Compose instead, copy the file into the Compose container:
-
-```powershell
-docker cp .\sql\diagnostics\data_quality_monitoring.sql kloudkart-compose:/tmp/
-```
-
-Connect to the Compose database:
-
-```powershell
-docker compose exec db psql -U postgres -d kloudkart_lab
-```
-
-Execute the file:
-
-```sql
-\i /tmp/data_quality_monitoring.sql
+psql -v ON_ERROR_STOP=1 -f .\sql\diagnostics\data_quality_monitoring.sql
 ```
 
 Query the monitoring results:
@@ -129,6 +101,7 @@ kloudkart-postgresql-engineering-lab/
 |   |   |-- data_diagnosis.md
 |   |-- technical_decisions.md
 |   |-- business_memo.md
+|   |-- validation_evidence.md
 |
 |-- sql/
 |   |-- diagnostics/
@@ -148,156 +121,70 @@ kloudkart-postgresql-engineering-lab/
 
 ## Technology Stack
 
-- PostgreSQL 18
+- PostgreSQL (optional Compose configuration targets version 18; course server version is not recorded here)
 - Docker and Docker Compose
 - SQL
-- Python
 - Git and GitHub
 
 ## Database Setup
 
-The project supports two ways to run PostgreSQL: Docker Compose (recommended) and a manual Docker container.
+The assignment targets the existing course-provided PostgreSQL server on `127.0.0.1:5432`; the Compose database is not required and does not contain the course data.
 
-### Option 1: Docker Compose (Recommended)
+Obtain the authorized schema, dataset and `race_test.py` from the course assignment materials. They are not included in this repository. Use the course instructions for their exact download and load format. The supplied schema is described as containing destructive `DROP TABLE` statements: do not load or rerun it against an existing populated database. Only initialize a database when the course explicitly directs you to use a fresh, authorized target.
 
-The repository includes a `compose.yaml` configuration for running PostgreSQL 18 with persistent storage and a health check.
-
-**1. Configure environment variables**
-
-Copy the example environment file:
+Set the database and user names to the values provided for your course database, then connect. `psql` will prompt for a password when required; do not put a real password in a command or commit it.
 
 ```powershell
-Copy-Item .\.env.example .\.env
+$env:PGHOST = "127.0.0.1"
+$env:PGPORT = "5432"
+$env:PGDATABASE = "<course-provided-database>"
+$env:PGUSER = "<course-provided-user>"
+psql -v ON_ERROR_STOP=1 -c "SELECT current_database(), version();"
 ```
 
-Edit `.env` and set a local PostgreSQL password:
-
-```dotenv
-POSTGRES_PASSWORD=your-local-password
-POSTGRES_PORT=5433
-```
-
-The `.env` file contains local credentials and must never be committed to Git. The repository includes `.env.example` as a template.
-
-**2. Start PostgreSQL**
+If the course specifically instructs you to load an SQL schema into a fresh authorized target, first set `PGDATABASE` to the course-provided fresh target name. Then use the downloaded schema path:
 
 ```powershell
-docker compose up -d
+$courseSchema = "C:\path\to\course\schema.sql"
+psql -v ON_ERROR_STOP=1 -f $courseSchema
 ```
 
-**3. Check container health**
+Load the dataset only with the course-provided import procedure, since its file format and table mapping are not present here.
 
-```powershell
-docker compose ps
-```
-
-The database container should report a healthy status.
-
-**4. Connect to PostgreSQL**
-
-```powershell
-docker compose exec db psql -U postgres -d kloudkart_lab
-```
-
-The Compose service uses PostgreSQL 18, exposes port `5433` on the host by default and stores database files in the named Docker volume `kloudkart_data`.
-
-**5. Stop the service**
-
-```powershell
-docker compose down
-```
-
-This stops and removes the Compose container and network while preserving the named database volume. Do not use `docker compose down -v` unless you intentionally want to delete the persistent database volume.
-
-**Important:** Docker Compose creates a fresh database. It does not automatically load the Kloud Kart training dataset or the completed SQL solutions. Load the authorised training schema and data before running the project scripts. Review the supplied schema first because it contains destructive `DROP TABLE` statements.
-
-### Option 2: Manual Docker Setup
-
-Alternatively, PostgreSQL can be started manually using Docker:
-
-```powershell
-docker run -d --name kloudkart -e POSTGRES_PASSWORD=kloudkart -p 5432:5432 postgres:18 -c max_connections=500
-```
-
-Connect to the database:
-
-```powershell
-docker exec -it kloudkart psql -U postgres -d kloudkart_lab
-```
-
-**Important:** The manual Docker container and the Docker Compose service are separate database environments. The manual container uses host port `5432`, while the Compose service uses host port `5433` by default. They do not share database contents or storage.
-
-The supplied schema contains destructive `DROP TABLE` statements. Do not rerun it against a populated database unless you intend to recreate the database and its contents.
+The repository keeps `compose.yaml` and `.env.example` only as an optional isolated local PostgreSQL environment. It starts an empty database and is not the submission target. Do not start it when working against the existing course server.
 
 ## Running the SQL Solutions
 
-The SQL solution files can be copied into either running PostgreSQL container.
+The customer spending report uses a rolling 12-month timestamp window. Since its boundary dates can fall partway through calendar months, the monthly output can include 13 calendar-month labels, with partial months at the start and end.
 
-### Using Manual Docker
+Run the read-only baseline checks, then deploy the solutions in dependency order against the existing authorized database. Open PowerShell in the repository root and set the connection variables described in [Database Setup](#database-setup).
 
-The following commands use the manual Docker container named `kloudkart`:
-
-```powershell
-docker cp .\sql\solutions\01_place_order.sql kloudkart:/tmp/
-docker cp .\sql\solutions\02_customer_spending_report.sql kloudkart:/tmp/
-docker cp .\sql\solutions\03_low_stock_category_rollup.sql kloudkart:/tmp/
-docker cp .\sql\solutions\04_auditable_inventory_movements.sql kloudkart:/tmp/
-```
-
-Connect to PostgreSQL:
+**1. Run baseline integrity checks (read-only):**
 
 ```powershell
-docker exec -it kloudkart psql -U postgres -d kloudkart_lab
+psql -v ON_ERROR_STOP=1 -f .\sql\diagnostics\integrity_checks.sql
 ```
 
-Execute the files:
-
-```sql
-\i /tmp/01_place_order.sql
-\i /tmp/02_customer_spending_report.sql
-\i /tmp/03_low_stock_category_rollup.sql
-\i /tmp/04_auditable_inventory_movements.sql
-```
-
-### Using Docker Compose
-
-Copy the SQL solution files into the Compose container named `kloudkart-compose`:
+**2. Deploy the four solution scripts in this order:**
 
 ```powershell
-docker cp .\sql\solutions\01_place_order.sql kloudkart-compose:/tmp/
-docker cp .\sql\solutions\02_customer_spending_report.sql kloudkart-compose:/tmp/
-docker cp .\sql\solutions\03_low_stock_category_rollup.sql kloudkart-compose:/tmp/
-docker cp .\sql\solutions\04_auditable_inventory_movements.sql kloudkart-compose:/tmp/
+psql -v ON_ERROR_STOP=1 -f .\sql\solutions\01_place_order.sql
+psql -v ON_ERROR_STOP=1 -f .\sql\solutions\02_customer_spending_report.sql
+psql -v ON_ERROR_STOP=1 -f .\sql\solutions\03_low_stock_category_rollup.sql
+psql -v ON_ERROR_STOP=1 -f .\sql\solutions\04_auditable_inventory_movements.sql
 ```
 
-Connect to PostgreSQL:
+Solution 03 creates `public.low_stock_by_category()`, which the monitoring view requires. Deploy the view after solution 03:
 
 ```powershell
-docker compose exec db psql -U postgres -d kloudkart_lab
+psql -v ON_ERROR_STOP=1 -f .\sql\diagnostics\data_quality_monitoring.sql
 ```
 
-Execute the files:
-
-```sql
-\i /tmp/01_place_order.sql
-\i /tmp/02_customer_spending_report.sql
-\i /tmp/03_low_stock_category_rollup.sql
-\i /tmp/04_auditable_inventory_movements.sql
-```
-
-The monitoring view is deployed separately using the instructions in the Additional Improvement section.
-
-**Note:** These commands demonstrate how to deploy the project SQL files. They do not initialise the training dataset. The required schema and authorised training data must be loaded into the target database first.
+These scripts expect the course-provided tables and data to be loaded already. Solution 01 initializes sequences from existing identifiers; run deployment only on the authorized lab database. It is not a schema/data loader. The external `race_test.py` is not tracked; obtain it from course materials and use its documented invocation and connection settings on the designated test database only. It creates orders and changes stock.
 
 ## Testing and Validation
 
-The implementations were tested against the supplied database.
-
-- Concurrent order placement was tested for overselling prevention, stock protection and transaction consistency.
-- Customer spending reports were checked for ranking, totals, monthly breakdowns and query performance.
-- Recursive category reporting was checked against the known hierarchy cycle and missing parent.
-- Inventory movements were tested for valid adjustments, invalid reasons, stock protection and transaction rollback.
-- The data-quality monitoring view was executed and verified against 12 checks, including the original integrity checks and additional stock and status checks.
+The repository does not contain test scripts, database output, execution plans or benchmark logs. See [Validation Evidence](docs/validation_evidence.md) for the evidence inventory and repeatable procedures. No runtime result is claimed here.
 
 ## Data Handling
 
@@ -317,13 +204,11 @@ Reproducing the investigation requires authorised access to the supplied trainin
 - [x] Technical decisions and trade-offs documentation.
 - [x] Business memo.
 - [x] Additional data-quality monitoring improvement.
-- [x] Final end-to-end validation and submission review.
+- [ ] Final end-to-end validation evidence recorded.
 - [x] Docker Compose PostgreSQL setup.
 
 ## Project Status
 
-All four core SQL requirements have been implemented and tested. The data diagnosis, technical decisions and business memo are documented. An additional reusable data-quality monitoring view has been implemented and verified with 12 checks.
+All four core SQL solution scripts and the additional data-quality monitoring view are present. Runtime test and performance evidence remains unverified in this repository; see [Validation Evidence](docs/validation_evidence.md).
 
-The Docker Compose configuration has also been added and verified with PostgreSQL 18, persistent storage and a passing container health check.
-
-Final database validation and repository review are complete.
+The optional Compose configuration is separate from the course database and is not required for submission.
