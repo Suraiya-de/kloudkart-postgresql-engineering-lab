@@ -13,6 +13,8 @@
 -- zero and negative balances are included.
 -- ============================================================
 
+\set ON_ERROR_STOP on
+
 BEGIN;
 
 -- The first deployed version created these two indexes; this

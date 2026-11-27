@@ -1,8 +1,8 @@
 -- ============================================================
 -- Kloud Kart: Data diagnosis checks
 --
--- Input:    the course schema and data, loaded fresh, before any
---           solution script runs.
+-- Input:    the course schema and data, loaded fresh, with only
+--           00_business_rules.sql run (for is_sale_status()).
 -- Produces: the figures quoted in docs/diagnosis/data_diagnosis.md.
 -- Asserts:  read-only; nothing is modified or cleaned.
 --
@@ -16,6 +16,7 @@
 -- of 27 November 2026.
 -- ============================================================
 
+\set ON_ERROR_STOP on
 \pset pager off
 
 -- ------------------------------------------------------------
@@ -363,10 +364,10 @@ ORDER BY 1;
 -- 5a. Report total, and what it would be under narrower rules.
 SELECT
     COUNT(*) FILTER (
-        WHERE LOWER(BTRIM(o.status)) IN ('completed', 'complete')
+        WHERE public.is_sale_status(o.status)
     ) AS report_orders,
     SUM(o.total_amount) FILTER (
-        WHERE LOWER(BTRIM(o.status)) IN ('completed', 'complete')
+        WHERE public.is_sale_status(o.status)
     ) AS report_total,
     SUM(o.total_amount) FILTER (
         WHERE LOWER(BTRIM(o.status)) = 'completed'
@@ -386,7 +387,7 @@ WITH with_complete AS (
     SELECT o.customer_id
     FROM public.orders o
     JOIN public.customers c USING (customer_id)
-    WHERE LOWER(BTRIM(o.status)) IN ('completed', 'complete')
+    WHERE public.is_sale_status(o.status)
       AND o.order_date <= :report_date::timestamp
     GROUP BY o.customer_id
     ORDER BY SUM(o.total_amount) DESC, o.customer_id
@@ -412,7 +413,7 @@ SELECT
     COUNT(*) AS unattributable_sales,
     SUM(o.total_amount) AS unattributable_value
 FROM public.orders o
-WHERE LOWER(BTRIM(o.status)) IN ('completed', 'complete')
+WHERE public.is_sale_status(o.status)
   AND o.order_date <= :report_date::timestamp
   AND NOT EXISTS (
       SELECT 1 FROM public.customers c WHERE c.customer_id = o.customer_id
@@ -443,7 +444,7 @@ mismatches AS (
         lt.line_total,
         lt.has_missing_price,
         dt.line_total AS deduplicated_total,
-        LOWER(BTRIM(o.status)) IN ('completed', 'complete')
+        public.is_sale_status(o.status)
             AND o.order_date <= :report_date::timestamp
             AND EXISTS (
                 SELECT 1 FROM public.customers c
@@ -470,11 +471,11 @@ FROM mismatches;
 SELECT
     COUNT(*) FILTER (
         WHERE order_date > LOCALTIMESTAMP
-          AND LOWER(BTRIM(status)) IN ('completed', 'complete')
+          AND public.is_sale_status(status)
     ) AS future_completed_orders,
     SUM(total_amount) FILTER (
         WHERE order_date > LOCALTIMESTAMP
-          AND LOWER(BTRIM(status)) IN ('completed', 'complete')
+          AND public.is_sale_status(status)
     ) AS future_completed_value,
     MIN(order_date) FILTER (
         WHERE order_date > LOCALTIMESTAMP
@@ -494,7 +495,7 @@ WITH customer_spend AS (
     FROM public.customers c
     LEFT JOIN public.orders o
         ON o.customer_id = c.customer_id
-       AND LOWER(BTRIM(o.status)) IN ('completed', 'complete')
+       AND public.is_sale_status(o.status)
        AND o.order_date <= :report_date::timestamp
     GROUP BY c.customer_id, LOWER(BTRIM(c.email))
 ),
@@ -575,5 +576,5 @@ SELECT
     (SELECT SUM(oi.quantity)
      FROM public.order_items oi
      JOIN public.orders o USING (order_id)
-     WHERE LOWER(BTRIM(o.status)) NOT IN ('cancelled', 'canceled'))
+     WHERE NOT public.is_cancelled_status(o.status))
         AS order_line_units_not_cancelled;

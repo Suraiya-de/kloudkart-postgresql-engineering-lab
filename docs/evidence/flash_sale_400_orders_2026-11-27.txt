@@ -3,38 +3,42 @@ Kloud Kart - Flash-sale load: 400 orders on one product
 
 Date: 2026-11-27
 Environment: Windows 11 laptop, Docker Desktop; PostgreSQL 18.7 container (8 vCPU, 16 GB visible),
-shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC.
-Database: kloudkart_audit (a scratch database), created empty and loaded with the course schema.sql and load.sql
-(categories 94, products 4,023, customers 40,420, orders 159,384, order_items 336,559, inventory_log 282,352).
+shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC; CPython 3.15.2,
+psycopg2-binary 2.9.13.
+Database: kloudkart_audit, a scratch database created empty and loaded with course/schema.sql
+and course/load.sql (categories 94, products 4,023, customers 40,420, orders 159,384,
+order_items 336,559, inventory_log 282,352). A separate database was used so the existing
+kloudkart_lab database was not reset. Schema, data and scripts are the same as in the README's
+Compose setup, which names the database kloudkart_lab.
 
-Command: python scripts/flash_sale_benchmark.py   (Python 3.15.2, psycopg2-binary 2.9.13)
+Command: python scripts/flash_sale_benchmark.py
 400 buyers released together against one product holding 400 units, so every
 order succeeds and every buyer queues on the same product row. This is the
 flash-sale shape from the brief (about 400 orders in ten seconds on a single
 product); race_test.py Test 2 only sells 50 of its 400 attempts.
 The wall clock runs from the moment all 400 connections are open and released
 together until the last order returns.
-Repeated three times.
+Repeated three times, after the three race-test runs.
 
 ##### RUN 1
 buyers=400 units=400 sold=400 refused=0 errored=0
 final stock=0 inventory_log rows=400 orders=400
-wall clock from barrier release=3.36s
-per-order latency: median=1.736s p95=3.147s max=3.355s
+wall clock from barrier release=4.19s
+per-order latency: median=2.413s p95=4.029s max=4.178s
 PASSED
 exit code: 0
 ##### RUN 2
 buyers=400 units=400 sold=400 refused=0 errored=0
 final stock=0 inventory_log rows=400 orders=400
-wall clock from barrier release=3.32s
-per-order latency: median=1.777s p95=3.173s max=3.302s
+wall clock from barrier release=4.33s
+per-order latency: median=2.581s p95=4.138s max=4.317s
 PASSED
 exit code: 0
 ##### RUN 3
 buyers=400 units=400 sold=400 refused=0 errored=0
 final stock=0 inventory_log rows=400 orders=400
-wall clock from barrier release=3.25s
-per-order latency: median=1.766s p95=3.104s max=3.231s
+wall clock from barrier release=3.78s
+per-order latency: median=2.000s p95=3.563s max=3.768s
 PASSED
 exit code: 0
 

@@ -2,18 +2,20 @@
 -- Kloud Kart: Requirement 2
 -- Monday customer-spending report
 --
--- Input:    the course schema and data.
+-- Input:    the course schema and data; public.is_sale_status()
+--           from 00_business_rules.sql.
 -- Produces: public.customer_spending_report(p_as_of timestamp)
 --           public.customer_spending_top100 (view)
 -- Asserts:  one row per customer per month for the 12 calendar
 --           months ending in the as-of month; for every customer
 --           the final running_total equals total_spent; the full
---           report returns in about 1.4 s on a laptop (see
+--           report returns in under two seconds on a laptop (see
 --           docs/evidence/report_benchmark_2026-11-27.txt).
 --
 -- Definitions (see docs/technical_decisions.md, section 3):
---   * A sale is an order whose status, ignoring case and spaces,
---     is 'completed' or 'complete'.
+--   * A sale is an order for which is_sale_status(status) is true:
+--     the status, ignoring case and spaces, is 'completed' or
+--     'complete'.
 --   * Spend is orders.total_amount, the amount charged at
 --     checkout, not the sum of order lines.
 --   * total_spent and order_count cover every completed order up
@@ -22,7 +24,11 @@
 --     12-month window, so the last month equals total_spent.
 --   * Orders whose customer does not exist cannot be attributed
 --     and are excluded; the diagnosis quantifies them.
+--   * Customers with no sale up to p_as_of still get their 12
+--     rows, with zero spend, zero orders and a zero running total.
 -- ============================================================
+
+\set ON_ERROR_STOP on
 
 BEGIN;
 
@@ -32,7 +38,7 @@ DROP VIEW IF EXISTS public.customer_spending_top100;
 DROP VIEW IF EXISTS public.customer_spending_report;
 
 -- No supporting index is created. A partial covering index made
--- the full report only 7% faster (1,375 ms to 1,277 ms), while
+-- the full report only 11% faster (1,635 ms to 1,459 ms), while
 -- every index on orders adds work to each flash-sale insert.
 -- See docs/evidence/report_benchmark_2026-11-27.txt.
 DROP INDEX IF EXISTS public.idx_orders_completed_spending;
@@ -59,7 +65,7 @@ AS $$
             o.order_date,
             o.total_amount
         FROM public.orders o
-        WHERE LOWER(BTRIM(o.status)) IN ('completed', 'complete')
+        WHERE public.is_sale_status(o.status)
           AND o.order_date <= p_as_of
           AND o.total_amount IS NOT NULL
     ),

@@ -3,17 +3,24 @@ Kloud Kart - Fresh-load verification
 
 Date: 2026-11-27
 Environment: Windows 11 laptop, Docker Desktop; PostgreSQL 18.7 container (8 vCPU, 16 GB visible),
-shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC.
-Database: kloudkart_audit (a scratch database), created empty and loaded with the course schema.sql and load.sql
-(categories 94, products 4,023, customers 40,420, orders 159,384, order_items 336,559, inventory_log 282,352).
+shared_buffers=128MB, work_mem=4MB, max_connections=500, TimeZone=UTC; CPython 3.15.2,
+psycopg2-binary 2.9.13.
+Database: kloudkart_audit, a scratch database created empty and loaded with course/schema.sql
+and course/load.sql (categories 94, products 4,023, customers 40,420, orders 159,384,
+order_items 336,559, inventory_log 282,352). A separate database was used so the existing
+kloudkart_lab database was not reset. Schema, data and scripts are the same as in the README's
+Compose setup, which names the database kloudkart_lab.
 
 Command: psql -v ON_ERROR_STOP=1 -f sql/run_all.sql
+The sql/ folder was copied into the container at /tmp/repo, so paths below
+read /tmp/repo/...; the README copies it to /tmp/sql. The path does not affect
+the result.
 Result: exit code 0; all 13 verification assertions passed.
 The script was then run a second time on the same database: exit code 0,
 all 13 assertions passed again, so it is safe to re-run.
 
 Load output (tail):
-Time: 674.656 ms
+Time: 620.787 ms
   table_name   | count  
 ---------------+--------
  categories    |     94
@@ -24,10 +31,21 @@ Time: 674.656 ms
  products      |   4023
 (6 rows)
 
-Time: 38.539 ms
+Time: 27.830 ms
 
 run_all.sql output (first run):
 Timing is on.
+== 0. Shared business rules (defines functions only)
+BEGIN
+Time: 0.153 ms
+CREATE FUNCTION
+Time: 1.075 ms
+CREATE FUNCTION
+Time: 0.282 ms
+CREATE FUNCTION
+Time: 0.248 ms
+COMMIT
+Time: 3.866 ms
 == 1. Diagnosis (read-only, on the untouched load)
 Pager usage is off.
                check_name                | affected_rows | distinct_keys | recorded_value 
@@ -52,7 +70,7 @@ Pager usage is off.
  invalid_order_quantities                |             0 |             0 |               
 (18 rows)
 
-Time: 1187.415 ms (00:01.187)
+Time: 1296.787 ms (00:01.297)
  normalised_status | raw_spellings | orders | recorded_value | average_order_value | first_order | last_order 
 -------------------+---------------+--------+----------------+---------------------+-------------+------------
  completed         |             4 |  89066 |   271522624.96 |             3048.56 | 2025-08-02  | 2027-08-20
@@ -64,14 +82,14 @@ Time: 1187.415 ms (00:01.187)
  canceled          |             1 |   3209 |     8976160.54 |             2797.18 | 2025-08-03  | 2026-08-31
 (7 rows)
 
-Time: 191.020 ms
+Time: 184.061 ms
                       direction                      | products | net_units | smallest_gap | largest_gap 
 -----------------------------------------------------+----------+-----------+--------------+-------------
  stock above ledger (units arrived without a record) |       22 |        89 |            3 |           6
  stock below ledger (units left without a record)    |      122 |     -2464 |          -56 |          -3
 (2 rows)
 
-Time: 42.781 ms
+Time: 43.960 ms
         direction         | orders | net_difference 
 --------------------------+--------+----------------
  a line has no unit price |    147 |     -730592.36
@@ -79,183 +97,183 @@ Time: 42.781 ms
  total below lines        |   1341 |    -3215549.76
 (3 rows)
 
-Time: 436.896 ms
+Time: 389.232 ms
  report_orders | report_total | total_without_complete | exact_match_orders | exact_match_total 
 ---------------+--------------+------------------------+--------------------+-------------------
         111190 | 339176836.88 |           271181571.44 |              22044 |       66404223.67
 (1 row)
 
-Time: 115.747 ms
+Time: 114.515 ms
  top100_customers_replaced 
 ---------------------------
                         24
 (1 row)
 
-Time: 272.245 ms
+Time: 208.194 ms
  unattributable_sales | unattributable_value 
 ----------------------+----------------------
                   144 |            388780.89
 (1 row)
 
-Time: 106.022 ms
+Time: 52.715 ms
  mismatches_in_report | report_change_if_lines_used | explained_by_duplicate_line 
 ----------------------+-----------------------------+-----------------------------
                  1717 |                 -1267831.33 |                         526
 (1 row)
 
-Time: 1337.614 ms (00:01.338)
+Time: 1271.030 ms (00:01.271)
  future_completed_orders | future_completed_value | first_future_date | orders_after_extract_end 
 -------------------------+------------------------+-------------------+--------------------------
                       12 |               35600.61 | 2026-12-04        |                       24
 (1 row)
 
-Time: 36.976 ms
+Time: 32.718 ms
  split_spend | would_enter_top100_if_merged | shared_emails_with_different_cities 
 -------------+------------------------------+-------------------------------------
   8818438.73 |                            1 |                                 206
 (1 row)
 
-Time: 417.339 ms
+Time: 392.263 ms
  ledger_gap_value | gaps_at_low_stock | shows_stock_ledger_says_none | oversold_value 
 ------------------+-------------------+------------------------------+----------------
        3865699.34 |                49 |                            7 |       20627.76
 (1 row)
 
-Time: 40.515 ms
+Time: 43.687 ms
  lines_priced_differently_today | customers_without_orders | ledger_sale_units | order_line_units | order_line_units_not_cancelled 
 --------------------------------+--------------------------+-------------------+------------------+--------------------------------
                            4116 |                      768 |            412645 |           554451 |                         500656
 (1 row)
 
-Time: 199.466 ms
+Time: 205.771 ms
 == 2. Order placement
 BEGIN
-Time: 0.102 ms
+Time: 0.105 ms
 CREATE SEQUENCE
-Time: 1.112 ms
+Time: 0.658 ms
 CREATE SEQUENCE
-Time: 0.390 ms
+Time: 0.370 ms
 CREATE SEQUENCE
-Time: 0.545 ms
+Time: 0.375 ms
 ALTER TABLE
-Time: 0.739 ms
+Time: 0.559 ms
 ALTER TABLE
-Time: 0.305 ms
+Time: 0.276 ms
 ALTER TABLE
-Time: 0.360 ms
+Time: 0.313 ms
 ALTER SEQUENCE
-Time: 0.239 ms
+Time: 0.222 ms
 ALTER SEQUENCE
-Time: 0.281 ms
+Time: 0.162 ms
 ALTER SEQUENCE
-Time: 0.232 ms
+Time: 0.186 ms
  setval 
 --------
  659384
 (1 row)
 
-Time: 8.182 ms
+Time: 9.096 ms
  setval  
 ---------
  1236559
 (1 row)
 
-Time: 18.182 ms
+Time: 21.864 ms
  setval 
 --------
  982487
 (1 row)
 
-Time: 17.490 ms
-psql:/tmp/repo/solutions/01_place_order.sql:81: NOTICE:  constraint "products_stock_non_negative" of relation "products" does not exist, skipping
+Time: 17.255 ms
 ALTER TABLE
-Time: 0.387 ms
+Time: 0.289 ms
+psql:/tmp/repo/solutions/01_place_order.sql:83: NOTICE:  constraint "products_stock_non_negative" of relation "products" does not exist, skipping
 ALTER TABLE
-Time: 0.513 ms
+Time: 0.606 ms
 CREATE FUNCTION
-Time: 2.351 ms
+Time: 1.929 ms
 COMMIT
-Time: 3.042 ms
+Time: 3.365 ms
 == 3. Customer spending report
 BEGIN
-Time: 0.130 ms
+Time: 0.176 ms
+psql:/tmp/repo/solutions/02_customer_spending_report.sql:37: NOTICE:  view "customer_spending_top100" does not exist, skipping
 DROP VIEW
-Time: 0.195 ms
-psql:/tmp/repo/solutions/02_customer_spending_report.sql:31: NOTICE:  view "customer_spending_top100" does not exist, skipping
+Time: 0.176 ms
 DROP VIEW
-Time: 0.138 ms
+Time: 0.171 ms
+psql:/tmp/repo/solutions/02_customer_spending_report.sql:38: NOTICE:  view "customer_spending_report" does not exist, skipping
+psql:/tmp/repo/solutions/02_customer_spending_report.sql:44: NOTICE:  index "idx_orders_completed_spending" does not exist, skipping
 DROP INDEX
-Time: 0.144 ms
-psql:/tmp/repo/solutions/02_customer_spending_report.sql:32: NOTICE:  view "customer_spending_report" does not exist, skipping
-psql:/tmp/repo/solutions/02_customer_spending_report.sql:38: NOTICE:  index "idx_orders_completed_spending" does not exist, skipping
+Time: 0.194 ms
 CREATE FUNCTION
-Time: 1.080 ms
+Time: 0.995 ms
 CREATE VIEW
-Time: 0.750 ms
+Time: 0.927 ms
 COMMIT
-Time: 3.071 ms
+Time: 3.132 ms
 == 4. Low-stock category roll-up
 BEGIN
-Time: 0.131 ms
-psql:/tmp/repo/solutions/03_low_stock_category_rollup.sql:22: NOTICE:  index "idx_categories_parent_id" does not exist, skipping
+Time: 0.094 ms
+psql:/tmp/repo/solutions/03_low_stock_category_rollup.sql:24: NOTICE:  index "idx_categories_parent_id" does not exist, skipping
+psql:/tmp/repo/solutions/03_low_stock_category_rollup.sql:25: NOTICE:  index "idx_products_category_id" does not exist, skipping
 DROP INDEX
-Time: 0.191 ms
+Time: 0.426 ms
 DROP INDEX
-Time: 0.164 ms
-psql:/tmp/repo/solutions/03_low_stock_category_rollup.sql:23: NOTICE:  index "idx_products_category_id" does not exist, skipping
+Time: 0.158 ms
 CREATE FUNCTION
-Time: 0.721 ms
+Time: 0.555 ms
 COMMIT
-Time: 3.069 ms
+Time: 3.101 ms
 == 5. Auditable inventory movements
 BEGIN
-Time: 0.124 ms
+Time: 0.123 ms
 CREATE FUNCTION
-Time: 0.599 ms
+Time: 0.541 ms
 CREATE FUNCTION
-Time: 0.229 ms
+Time: 0.222 ms
 DROP TRIGGER
-Time: 0.182 ms
-psql:/tmp/repo/solutions/04_auditable_inventory_movements.sql:184: NOTICE:  trigger "trg_products_stock_audit" for relation "public.products" does not exist, skipping
+Time: 0.175 ms
+psql:/tmp/repo/solutions/04_auditable_inventory_movements.sql:186: NOTICE:  trigger "trg_products_stock_audit" for relation "public.products" does not exist, skipping
 CREATE TRIGGER
-Time: 0.751 ms
+Time: 0.577 ms
 COMMIT
-Time: 3.076 ms
+Time: 3.229 ms
 == 6. Data-quality monitoring view
 BEGIN
-Time: 0.169 ms
-psql:/tmp/repo/diagnostics/data_quality_monitoring.sql:18: NOTICE:  view "data_quality_monitoring" does not exist, skipping
+Time: 0.097 ms
 DROP VIEW
-Time: 0.156 ms
+Time: 0.172 ms
+psql:/tmp/repo/diagnostics/data_quality_monitoring.sql:23: NOTICE:  view "data_quality_monitoring" does not exist, skipping
 CREATE VIEW
-Time: 3.459 ms
+Time: 3.253 ms
 COMMIT
-Time: 3.154 ms
+Time: 3.172 ms
 == 7. Verification
 Pager usage is off.
-psql:/tmp/repo/tests/verify_solution.sql:81: NOTICE:  PASS report: 485040 rows = 12 months x 40420 customers
-psql:/tmp/repo/tests/verify_solution.sql:81: NOTICE:  PASS report: every final running_total equals total_spent
-psql:/tmp/repo/tests/verify_solution.sql:81: NOTICE:  PASS report: total spend 339176836.88 matches an independent sum
-psql:/tmp/repo/tests/verify_solution.sql:81: NOTICE:  PASS report: top-100 view returns 100 customers x 12 months
+psql:/tmp/repo/tests/verify_solution.sql:113: NOTICE:  PASS report: 485040 rows = 12 months x 40420 customers
+psql:/tmp/repo/tests/verify_solution.sql:113: NOTICE:  PASS report: every final running_total equals total_spent
+psql:/tmp/repo/tests/verify_solution.sql:113: NOTICE:  PASS report: total spend 339184984.53 as of 2026-10-07 18:49:00 matches an independent sum
 DO
-Time: 1725.122 ms (00:01.725)
-psql:/tmp/repo/tests/verify_solution.sql:161: NOTICE:  PASS roll-up: roots + uncategorised + cycle members = 4023 products
-psql:/tmp/repo/tests/verify_solution.sql:161: NOTICE:  PASS roll-up: Electronics (1238 products) matches a top-down walk
-psql:/tmp/repo/tests/verify_solution.sql:161: NOTICE:  PASS roll-up: 2 cycle and 1 missing-parent categories flagged, query terminated
+Time: 1753.959 ms (00:01.754)
+psql:/tmp/repo/tests/verify_solution.sql:113: NOTICE:  PASS report: top-100 view returns 100 customers x 12 months
+psql:/tmp/repo/tests/verify_solution.sql:236: NOTICE:  PASS roll-up: roots + uncategorised + cycle members = 4023 products
+psql:/tmp/repo/tests/verify_solution.sql:236: NOTICE:  PASS roll-up: Electronics (1238 products) matches a top-down walk
 DO
-Time: 14.887 ms
+Time: 17.063 ms
+psql:/tmp/repo/tests/verify_solution.sql:236: NOTICE:  PASS roll-up: 2 cycle and 1 missing-parent categories flagged, matching an independent walk; query terminated
 BEGIN
-Time: 0.112 ms
-psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS place_order: oversized request refused with "Out of stock"
-psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS place_order: order 659385 placed, exactly one movement logged
-psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS record_inventory_movement: restock logged once
-psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS record_inventory_movement: refused movement left stock and log unchanged
-psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS audit trigger: direct UPDATE recorded as unlogged_update
+Time: 0.108 ms
+psql:/tmp/repo/tests/verify_solution.sql:369: NOTICE:  PASS place_order: oversized request refused with "Out of stock"
+psql:/tmp/repo/tests/verify_solution.sql:369: NOTICE:  PASS place_order: order 659385 placed, exactly one movement logged
+psql:/tmp/repo/tests/verify_solution.sql:369: NOTICE:  PASS record_inventory_movement: restock logged once
+psql:/tmp/repo/tests/verify_solution.sql:369: NOTICE:  PASS record_inventory_movement: refused movement left stock and log unchanged
+psql:/tmp/repo/tests/verify_solution.sql:369: NOTICE:  PASS audit trigger: direct UPDATE recorded as unlogged_update
 DO
-Time: 68.203 ms
+Time: 79.377 ms
+psql:/tmp/repo/tests/verify_solution.sql:369: NOTICE:  PASS constraint: negative stock rejected
 ROLLBACK
-Time: 0.105 ms
-psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS constraint: negative stock rejected
+Time: 0.237 ms
  severity |           check_name            | violation_count |                                   description                                    
 ----------+---------------------------------+-----------------+----------------------------------------------------------------------------------
  HIGH     | order_total_mismatch            |            2426 | Orders whose total differs from the sum of their order lines
@@ -279,4 +297,4 @@ psql:/tmp/repo/tests/verify_solution.sql:286: NOTICE:  PASS constraint: negative
  INFO     | zero_stock                      |             577 | Products at zero stock; an availability signal, not a data defect
 (19 rows)
 
-Time: 1307.618 ms (00:01.308)
+Time: 1085.937 ms (00:01.086)

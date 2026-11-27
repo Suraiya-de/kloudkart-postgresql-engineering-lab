@@ -13,9 +13,9 @@ Neither answer you were given would have fixed things on its own. Triggers alone
 
 **The Monday report.** It now covers every customer: total spent, number of orders, spend in each of the last 12 months, a running total and a ranking, in under two seconds on a laptop. The running total always ends on the customer's total spent, so Adwoa can see at a glance that the figures agree.
 
-**Low stock.** One view shows low-stock counts for every category, rolled up through every level (Electronics, Phones, Phone Accessories, Cases), in a fraction of a second. Products with no category appear on their own line.
+**Low stock.** One report shows low-stock counts for every category, rolled up through every level (Electronics, Phones, Phone Accessories, Cases), in a fraction of a second. Products with no category appear on their own line.
 
-**The trail.** Every sale, restock, return, correction and write-off is recorded with its reason. A stock figure changed any other way is now recorded too, with the login that changed it.
+**The trail.** Every sale, restock, return, correction and write-off is recorded with its reason. A stock figure changed any other way is now recorded too, with the account that changed it.
 
 **Extra: a Monday health check.** One list shows each known data problem and how many records it affects, so new problems are spotted the week they appear.
 
@@ -32,7 +32,7 @@ Neither answer you were given would have fixed things on its own. Triggers alone
 1. Count the 144 mismatched products and the 14 below zero, and record each correction through the new process.
 2. Confirm that "complete" means "completed", then use one set of status names everywhere.
 3. Agree with finance whether revenue is the order total or the sum of its items.
-4. Before the first flash sale, have your developers make the shop share a small, fixed number of connections to the system.
+4. Before the first flash sale, have your developers set the website to serve many shoppers through a small, fixed number of links to the stock system, so a rush of buyers cannot overload it.
 
 ## What we cannot stand behind yet
 
