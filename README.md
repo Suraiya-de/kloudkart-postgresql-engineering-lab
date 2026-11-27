@@ -21,7 +21,7 @@ Measured on a laptop against a fresh load of the course data (159,384 orders, 40
 |---|---|
 | No overselling | Course `race_test.py` passed unmodified, 3 runs out of 3. 400 buyers for one product: 400 orders in 3.8-4.3 s, none oversold, no errors. |
 | Fast Monday report | Every customer, 12 months, running totals and ranking in 1.64 s, against about 4 hours for a per-customer version. |
-| Low stock at a glance | Full category roll-up, any depth, in about 4 ms. |
+| Low stock at a glance | Full category roll-up, any depth, in 4-6 ms. |
 | Proof of what happened | Every change to a product's stock writes an `inventory_log` row, including changes made outside the provided functions. |
 
 ## Repository structure
@@ -56,7 +56,7 @@ Measured on a laptop against a fresh load of the course data (159,384 orders, 40
 |-- scripts/
 |   |-- flash_sale_benchmark.py       400 concurrent orders on one product
 |-- sql/
-    |-- run_all.sql                   Runs every stage below in order
+    |-- run_all.sql                   Runs rules, diagnosis, solutions and tests in order
     |-- diagnostics/
     |   |-- integrity_checks.sql      Diagnosis queries (read-only)
     |   |-- data_quality_monitoring.sql
@@ -124,7 +124,7 @@ In Git Bash on Windows, set `MSYS_NO_PATHCONV=1` first so `/tmp/course` is not r
 
 ### 3. Diagnose, deploy and verify
 
-One script runs the diagnosis on the untouched data, deploys the four solutions and the monitoring view, then runs the assertions in `sql/tests/verify_solution.sql`. It stops at the first error or failed assertion.
+One script defines the shared business rules (`00_business_rules.sql`), runs the diagnosis on the untouched data, deploys the four solutions and the monitoring view, then runs the assertions in `sql/tests/verify_solution.sql`. It stops at the first error or failed assertion.
 
 ```bash
 docker compose cp sql/. db:/tmp/sql
@@ -149,7 +149,8 @@ Windows PowerShell:
 
 ```powershell
 py -m pip install -r requirements.txt
-$env:DATABASE_URL = "postgresql://postgres:<your-password>@127.0.0.1:5433/kloudkart_lab"
+Get-Content .env | ForEach-Object { if ($_ -match '^\s*([A-Z_]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] } }
+$env:DATABASE_URL = "postgresql://postgres:$($env:POSTGRES_PASSWORD)@127.0.0.1:$($env:POSTGRES_PORT)/kloudkart_lab"
 py course\race_test.py
 py scripts\flash_sale_benchmark.py
 ```

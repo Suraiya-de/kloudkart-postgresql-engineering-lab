@@ -8,7 +8,7 @@ This document explains how each of Nana's four requirements was met, what was re
 |---|---|---|
 | No overselling | `place_order()`: one conditional `UPDATE` that checks and deducts stock together, plus a `CHECK (stock_quantity >= 0)` backstop | Course race test passed 3/3; 400 orders on one product in 3.8-4.3 s, none oversold |
 | Fast Monday report | `customer_spending_report(p_as_of)`: one set-based pass with window functions | 40,420 customers in 1.64 s (median), against about 4 hours for the per-customer approach |
-| Low-stock roll-up | `low_stock_by_category()`: recursive walk of any depth with a cycle guard | 4 ms |
+| Low-stock roll-up | `low_stock_by_category()`: recursive walk of any depth with a cycle guard | 4-6 ms |
 | Proof of what happened | Every inventory function writes `inventory_log`; a trigger logs any other update to a product's stock | Verified by `sql/tests/verify_solution.sql` |
 
 ## 2. Stopping the overselling
@@ -50,7 +50,7 @@ Triggers are the right tool for the other half of the problem, the audit trail (
 |---|---|
 | Read stock, then update | The race that caused the overselling. |
 | `SELECT ... FOR UPDATE`, then update | Correct, but two statements where one does the job, and the lock is held for longer. |
-| `SERIALIZABLE` isolation | Correct, but losing buyers get serialization failures that must be retried. Under a 400-buyer spike most would retry repeatedly, and the course test fails if one reaches the client. |
+| `SERIALIZABLE` isolation | Correct, but losing buyers get serialisation failures that must be retried. Under a 400-buyer spike most would retry repeatedly, and the course test fails if one reaches the client. |
 | Advisory locks | Correct, but a second locking scheme that every future code path must remember to use. |
 | `FOR UPDATE NOWAIT` or `SKIP LOCKED` | Would tell buyers "out of stock" while stock remains, just because someone else was mid-purchase. |
 | Locking the whole products table | Would make a flash sale on one product block every other product. |
@@ -111,7 +111,7 @@ Adwoa's actual query was not supplied, so the first row is a reconstruction of t
 | "Total spent" and "order count" | All completed orders up to the report date, not just the last 12 months | If Adwoa wants 12-month totals, the ranking changes; the monthly columns already give the 12-month view. |
 | The 12 months | The 12 calendar months ending in the report month; the last month is month-to-date | A rolling 365-day window would split months at both ends, which is why the previous version showed 13 month labels. |
 | Running total | Starts from the customer's spend before the window, so the final month equals total spent | Adwoa may have tracked it from zero; the monthly figures allow either. The match is a built-in check. |
-| Report date | A parameter, defaulting to today | This extract ends on 31 August 2026, so "today" shows three empty months. `customer_spending_report('2026-08-31 23:59:59')` reproduces the report as of the end of the data, and any past Monday can be re-run. |
+| Report date | A parameter, defaulting to today | This extract ends on 31 August 2026, so as of today the months after August are almost entirely zero. `customer_spending_report('2026-08-31 23:59:59')` reproduces the report as of the end of the data, and any past Monday can be re-run. |
 | Future-dated orders | Excluded until their date | They will appear when their date arrives (diagnosis 3.8). The monitoring view flags them. |
 | Orders whose customer does not exist | Excluded | 388,780.89 of completed sales are not in any customer's total (diagnosis 3.5). |
 | Customers with no orders | Included with zero | The report really is "every customer"; filter on `order_count > 0` if not wanted. |
@@ -120,7 +120,7 @@ Adwoa's actual query was not supplied, so the first row is a reconstruction of t
 
 ### Verification
 
-`sql/tests/verify_solution.sql` asserts that the report has exactly 12 rows per customer, that every customer's final running total equals their total spent, and that the grand total (339,176,836.88) equals an independent sum of the same orders.
+`sql/tests/verify_solution.sql` asserts that the report has exactly 12 rows per customer, that every customer's final running total equals their total spent, and that the grand total equals an independent sum of the same orders. It derives its report date from the data (the latest sale on or before today), so it holds for any extract; on the course data that date is 7 October 2026 and the total 339,184,984.53.
 
 ## 4. Low-stock roll-up
 
@@ -134,7 +134,7 @@ Adwoa's actual query was not supplied, so the first row is a reconstruction of t
 - **Nothing hidden.** Products with no category appear on a separate "no category assigned" line; categories with a missing parent are flagged.
 - **Indexes removed.** The first deployed version created indexes on `categories.parent_id` and `products.category_id`. The measured plan used neither; with 94 categories and 4,023 products, reading the tables directly is faster. Both were dropped so they cost nothing on writes.
 
-Verification: the Electronics total (1,238 products) matches an independent top-down walk, and the root categories plus the uncategorised line plus the cycle members add up to all 4,023 products. The roll-up runs in about 4 ms.
+Verification: the largest root category (Electronics, 1,238 products) matches an independent top-down walk, the root categories plus the uncategorised line plus the cycle members add up to all 4,023 products, and the cycle and missing-parent flags match an independent walk using PostgreSQL's `CYCLE` clause. The roll-up runs in 4-6 ms.
 
 Rejected: fixed-depth joins (break when marketing adds a level), a stored path or closure table (faster at millions of categories, but another structure the team must keep in step on every change), and silently repairing the cycle (the correct parent is a business decision).
 

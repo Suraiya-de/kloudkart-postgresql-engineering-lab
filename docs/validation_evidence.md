@@ -30,8 +30,8 @@ Every result in this repository's documentation comes from one of the runs below
 | `sql/run_all.sql` from a fresh load | Exit code 0 on the first run and on a re-run; every script deployed without error | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
 | Report: 12 rows per customer | 485,040 rows for 40,420 customers | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
 | Report: final running total equals total spent | True for every customer | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
-| Report: total against an independent sum | 339,176,836.88 both ways | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
-| Roll-up: Electronics against an independent walk | 1,238 products both ways | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Report: total against an independent sum, as of the latest sale on or before the run (7 October 2026) | 339,184,984.53 both ways | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
+| Roll-up: largest root category (Electronics) against an independent walk | 1,238 products both ways | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
 | Roll-up: coverage | Roots + uncategorised + cycle members = 4,023 products | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
 | Oversized order | Refused with "Out of stock"; stock unchanged | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
 | Restock | One log row, no duplicate from the trigger | [fresh_load_verification](evidence/fresh_load_verification_2026-11-27.txt) |
